@@ -169,3 +169,169 @@ Paleta índigo/ciano, tipografia Inter + Space Grotesk, sem depender de Bootstra
 
 ### Testes
 `pytest tests/test_premium.py` — webhook sem assinatura, assinatura forjada, corpo adulterado e assinatura válida (HMAC real), checkout e limite de favoritos.
+
+---
+
+## Atividade 8 — Classificação de serviços e documentação reversa
+
+> Escrito a partir da leitura do código (`app_principal/app.py`, `auth_service/app.py`, `log_service/app.py`, `docker-compose.yml`), não de memória.
+
+### 1. Classificação SaaS / PaaS / IaaS
+
+| Peça do sistema | Camada | Justificativa |
+|---|---|---|
+| Servidor/VM da disciplina (host onde roda o Docker) | **IaaS** | Recebemos uma máquina virtual (CPU, disco, rede, IP público); sistema operacional e tudo acima são responsabilidade nossa. |
+| Docker + Docker Compose + Portainer | **CaaS** (entre IaaS e PaaS) | O Portainer faz o build e o *redeploy* da stack a partir do GitHub, sem configurarmos o servidor à mão, mas ainda definimos imagens, portas e rede. |
+| Containers `web` (catálogo), `auth_service` e `log_service` | Código nosso, rodando sobre IaaS/CaaS | Somos donos do código, das atualizações e da segurança dessas aplicações. |
+| Redis (container `redis`) | **IaaS** (auto-hospedado) | Software open source que nós subimos e operamos; ninguém o gerencia por nós. |
+| MinIO (container `minio`) | **IaaS** (auto-hospedado) | Armazenamento de objetos compatível com S3 que nós operamos, em volume próprio (`minio_data`). Equivale ao que seria um S3 na nuvem, mas sem gerenciamento. |
+| Banco MariaDB/MySQL (host externo configurado em `DB_HOST`) | **PaaS** (banco como serviço) | O banco é fornecido e mantido pela disciplina; só usamos o schema (tabelas e consultas), sem administrar o servidor. |
+| Stripe (Checkout + webhooks) | **SaaS** (consumido por API) | Pagamento pronto: tela de checkout, cobrança recorrente e cartão ficam com o Stripe. Só integramos por API/webhook. |
+| TMDB (catálogo de filmes) | **SaaS** (API) | Serviço externo pronto; só consultamos os dados dos filmes com uma chave de API. |
+| Mailtrap/SMTP (e-mail de redefinição de senha) | **SaaS** | Envio de e-mail feito por serviço externo via SMTP; sem SMTP configurado, o link só é impresso no log (modo dev). |
+| GitHub (repositório) | **SaaS** | Hospeda o código e é a fonte que o Portainer usa no *Pull and redeploy*. |
+
+### 2. Documentação reversa — Especificação (visão de quem usa)
+
+NicoFlix é um catálogo da filmografia de Tom Hanks com contas de usuário.
+
+- **Cadastro e login:** o usuário se cadastra com nome, e-mail e senha. O login tem duas etapas: senha e depois um código de 6 dígitos (2FA). O primeiro usuário cadastrado vira **admin**; os demais são **usuario**. A sessão dura 2 horas.
+- **Recuperação de senha:** "Esqueci a senha" envia por e-mail um link de uso único que vale 30 minutos.
+- **Catálogo:** lista os filmes de Tom Hanks (dados do TMDB) com pôster, título e sinopse.
+- **Favoritos:** o usuário marca e desmarca filmes. No plano grátis o limite é de 5; no Premium não há limite.
+- **Comentários:** cada usuário tem no máximo um comentário por filme, e escrever de novo substitui o anterior. O usuário apaga os seus; o admin pode apagar de qualquer um, na tela de moderação.
+- **Perfil e avatar:** o usuário edita nome de exibição, bio e foto (JPEG/PNG/WEBP, até 2 MB). A foto fica no MinIO e é exibida por um link temporário.
+- **Plano Premium:** o botão "Assinar Premium" (R$ 9,90/mês) leva ao checkout do Stripe. Depois do pagamento confirmado, o usuário ganha o selo 👑 e favoritos ilimitados. Se a assinatura for cancelada, volta ao plano grátis.
+- **Logs de auditoria (admin):** o admin vê as últimas 100 ações (login, logout, favoritos, comentários, perfil, assinatura e acessos negados) com usuário, data e IP.
+
+### 3. Documentação reversa — Arquitetura
+
+```mermaid
+flowchart LR
+    U([Navegador do usuário])
+    subgraph Servidor["Servidor (VM + Docker/Portainer) — rede nicoflix-net"]
+        WEB["web / app_principal<br/>Flask :80 (público :8223)"]
+        AUTH["auth_service<br/>Flask :5001 (interno)"]
+        LOG["log_service<br/>Flask :5002 (interno)"]
+        REDIS[("Redis<br/>Stream nicoflix:logs")]
+        MINIO[("MinIO<br/>bucket nicoflix-perfis")]
+    end
+    DB[("MariaDB/MySQL<br/>externo")]
+    TMDB[/"TMDB API"/]
+    STRIPE[/"Stripe"/]
+    SMTP[/"Mailtrap (SMTP)"/]
+
+    U -->|HTTP: páginas e formulários| WEB
+    U -.->|URL pré-assinada da foto| MINIO
+    U -->|Checkout hospedado| STRIPE
+    WEB -->|/validate-token a cada requisição, /login, /register| AUTH
+    WEB -->|POST /log, GET /events| LOG
+    WEB -->|upload e URL assinada| MINIO
+    WEB -->|favoritos, comentários, perfis, assinaturas| DB
+    WEB -->|filmes| TMDB
+    WEB -->|cria Checkout Session| STRIPE
+    STRIPE ==>|"webhook assinado: POST /stripe/webhook"| WEB
+    AUTH -->|usuarios, reset_tokens| DB
+    AUTH -->|e-mail de reset| SMTP
+    AUTH -->|POST /log| LOG
+    LOG --> REDIS
+```
+
+Pontos importantes:
+- Só o `web` (porta 8223) e a API do MinIO (porta 29517) são publicados. `auth_service`, `log_service` e `redis` ficam só na rede interna do Docker.
+- O navegador nunca fala direto com `auth_service` e `log_service`: tudo passa pelo `web`.
+- A foto de perfil é a exceção: o navegador baixa direto do MinIO por uma URL pré-assinada e temporária (1 h).
+- O Stripe é quem chama o `web` (webhook); o Premium só é concedido por essa chamada, depois de validar a assinatura criptográfica.
+
+### 4. Documentação reversa — Regras de negócio
+
+**Autenticação**
+- Se não existir nenhum usuário cadastrado, o primeiro cadastro recebe o papel `admin`; senão, `usuario`.
+- Se usuário ou e-mail já existem, o cadastro é recusado (409).
+- Se as credenciais estão corretas, o sistema gera um código 2FA de 6 dígitos; o login só termina com o código correto.
+- Se o código 2FA estiver certo, o sistema emite um JWT com validade de 2 horas; se o JWT expirar, o usuário volta ao login.
+- Se o link de redefinição de senha tiver mais de 30 minutos, ou já tiver sido usado, ele é recusado.
+- A cada requisição, o `web` valida o JWT no `auth_service`; sem token válido, o usuário é redirecionado ao login.
+
+**Permissões (RBAC)**
+- Se o usuário não é admin, o acesso a `/admin/comentarios` e `/admin/logs` retorna 403 e a tentativa é registrada no log.
+- Se um usuário comum tenta apagar o comentário de outro, recebe 403; o admin pode apagar de qualquer um.
+- Se o `user_id` da URL de edição de perfil ou de foto é diferente do usuário logado, retorna 403 (vale até para admin) e o evento é registrado.
+
+**Conteúdo**
+- Se o usuário comenta duas vezes no mesmo filme, o segundo comentário substitui o primeiro (um por usuário e filme).
+- Se o usuário favorita um filme já favoritado, o favorito é removido (o mesmo botão alterna).
+- Nome de exibição: até 100 caracteres. Bio: até 280.
+- Se a foto passa de 2 MB, não é uma imagem válida ou não é JPEG/PNG/WEBP, o upload é recusado.
+
+**Premium**
+- Se o usuário é do plano grátis e já tem 5 favoritos, o 6º é bloqueado (checado no backend) e o evento é registrado.
+- Se o usuário é Premium, não há limite de favoritos.
+- Se o pagamento é confirmado (`checkout.session.completed` pago), o usuário vira Premium. Se a assinatura é cancelada (`customer.subscription.deleted`), deixa de ser.
+- Se o webhook chega sem assinatura válida do Stripe, é rejeitado (400) e nada é gravado.
+- Voltar do checkout para o site não concede Premium; só o webhook concede.
+- Nenhum dado de cartão é armazenado; só os IDs de cliente e assinatura do Stripe.
+
+**Auditoria**
+- Ações relevantes (login, logout, favoritar, comentar, perfil, assinatura, acessos negados) são enviadas ao `log_service` e gravadas no Redis Stream, que guarda no máximo 10.000 eventos. Se o log_service estiver fora do ar, a ação do usuário continua funcionando e só o registro é perdido.
+
+### 5. Documentação reversa — Modelo de dados
+
+```mermaid
+erDiagram
+    USUARIOS ||--o| PERFIS : "tem (user_id)"
+    USUARIOS ||--o{ FAVORITOS : "marca (user_id)"
+    USUARIOS ||--o{ COMENTARIOS : "escreve (user_id)"
+    USUARIOS ||--o| ASSINATURAS : "assina (user_id)"
+    USUARIOS ||--o{ RESET_TOKENS : "pede (usuario_id)"
+
+    USUARIOS {
+        int id PK
+        string username
+        string email
+        string password
+        string role "admin | usuario"
+    }
+    RESET_TOKENS {
+        int id PK
+        string token UK
+        int usuario_id FK
+        timestamp expira_em
+        bool usado
+    }
+    PERFIS {
+        int user_id PK
+        string nome_exibicao
+        string bio
+        string foto_key "chave do objeto no MinIO"
+    }
+    FAVORITOS {
+        int id PK
+        int user_id
+        int movie_id "id do filme no TMDB"
+    }
+    COMENTARIOS {
+        int id PK
+        int user_id
+        int movie_id "id do filme no TMDB"
+        text comentario
+    }
+    ASSINATURAS {
+        int user_id PK
+        bool premium
+        string stripe_customer_id
+        string stripe_subscription_id
+    }
+```
+
+- **Filmes** não têm tabela: vêm do TMDB e são referenciados só pelo `movie_id`.
+- **Log** não é tabela: são entradas do Redis Stream `nicoflix:logs` (usuário, ação, IP, data).
+- **Foto:** o arquivo fica no MinIO e o banco guarda só a chave (`foto_key`).
+- **Sessão Premium** é a tabela `assinaturas`. `favoritos`, `comentários` e `perfis` têm chave única em `(user_id, movie_id)` ou em `user_id`, o que garante um registro por usuário e filme.
+- Só `reset_tokens` tem chave estrangeira real (para `usuarios`). Nas demais tabelas o vínculo com o usuário é lógico, por `user_id`, porque a tabela `usuarios` pertence ao `auth_service` e as outras ao `web`.
+
+### Limitações conhecidas (encontradas ao ler o código)
+- As **senhas são gravadas em texto puro** em `usuarios.password` e comparadas diretamente; o correto seria guardar um hash (ex.: `werkzeug.security.generate_password_hash`).
+- O `auth_service` executa `DROP TABLE usuarios` a cada inicialização: os ids recomeçam, e `perfis`, `favoritos`, `comentarios` e `assinaturas` podem ficar ligados a usuários que não existem mais ou ser herdados por um novo usuário.
+- O código 2FA é devolvido na resposta do login (`dev_code`) e mostrado na tela, e não tem prazo de expiração, apesar da mensagem de erro dizer "expirado". Serve para a demonstração, não para produção.
+- O texto do comentário e o `movie_id` não são validados no servidor.
