@@ -74,15 +74,14 @@ services:
 
   web:
     build:
-      context: ./app_principal
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: app_principal/Dockerfile
     container_name: nicoflix_web
     ports:
       - "8223:80"
     environment:
       - AUTH_SERVICE_URL=http://auth_service:5001
       - LOG_SERVICE_URL=http://log_service:5002
-      - TMDB_API_KEY=${TMDB_API_KEY:-6566259ba55415e75fcdaaec316a8be7}
       - DB_HOST=${DB_HOST:-35.226.64.52}
       - DB_USER=${DB_USER:-IAC_2026_02_nicollas_carvalho}
       - DB_PASSWORD=${DB_PASSWORD:-nico11as}
@@ -96,7 +95,7 @@ services:
       - MINIO_PUBLIC_PORT=${MINIO_API_HOST_PORT:-29517}
       - MINIO_ROOT_USER=${MINIO_ROOT_USER:-nicoflix_admin}
       - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-nicoflix_minio_secret}
-      - MINIO_BUCKET=${MINIO_BUCKET:-nicoflix-perfis}
+      - MINIO_BUCKET=${MINIO_BUCKET:-studymatch-arquivos}
       - MINIO_SECURE=${MINIO_SECURE:-false}
       - PRESIGNED_URL_EXPIRY_SECONDS=${PRESIGNED_URL_EXPIRY_SECONDS:-3600}
       # Stripe (Atividade 7, modo teste). SEM valor padrão de propósito: defina
@@ -104,7 +103,7 @@ services:
       - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY:-}
       - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET:-}
       - STRIPE_PRICE_ID=${STRIPE_PRICE_ID:-}
-      - FAVORITOS_LIMITE_GRATIS=${FAVORITOS_LIMITE_GRATIS:-5}
+      - GRUPOS_LIMITE_GRATIS=${GRUPOS_LIMITE_GRATIS:-1}
     depends_on:
       - auth_service
       - log_service

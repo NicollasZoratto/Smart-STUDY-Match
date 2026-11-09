@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>StudyMatch — Detalhe do grupo</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <div class="container">
+    <div class="glass-panel">
+      <div class="top-bar">
+        <h1>📚 {{ grupo.titulo }}</h1>
+        <div class="user-info">
+          <span>{{ usuario }}</span>
+          <span class="badge {{ 'admin' if role == 'admin' else '' }}">{{ role }}</span>
+          {% if premium %}<span class="badge premium">👑 Pro</span>{% endif %}
+          <a href="{{ url_for('grupos_lista') }}" class="btn-secondary">📚 Grupos</a>
+          <a href="{{ url_for('perfil') }}" class="btn-secondary">👤 Perfil</a>
+          {% if role == 'admin' %}<a href="{{ url_for('admin_logs') }}" class="btn-secondary">📜 Logs</a>{% endif %}
+          <a href="/logout" class="btn-logout">Sair</a>
+        </div>
+      </div>}}
+      {% with messages = get_flashed_messages(with_categories=true) %}
+      {% for category, message in messages %}
+      <div class="alert alert-{{ category if category != 'error' else 'danger' }}">{{ message }}</div>
+      {% endfor %}
+      {% endwith %}
+      {% if grupo.foto_url %}<img src="{{ grupo.foto_url }}" alt="Capa de {{ grupo.titulo }}" style="max-width:320px;border-radius:12px;margin-bottom:1rem;">{% endif %}
+      <p><strong>Disciplina:</strong> {{ grupo.disciplina }}</p>
+      <p><strong>Quando:</strong> {{ grupo.dia_semana_nome }}, {{ grupo.horario_inicio }}–{{ grupo.horario_fim }} ({{ grupo.modalidade }})</p>
+      <p><strong>Vagas:</strong> {{ grupo.membros }}/{{ grupo.vagas }}</p>
+      <p>{{ grupo.descricao or 'Sem descrição.' }}</p>
+      {% if pode_editar %}
+      <hr style="margin:1.2rem 0;opacity:.2;">
+      <p>
+        <a href="{{ url_for('grupo_editar', grupo_id=grupo.id) }}" class="btn-primary">✏️ Editar</a>
+        <form action="{{ url_for('grupo_excluir', grupo_id=grupo.id) }}" method="POST" style="display:inline;" onsubmit="return confirm('Remover este grupo?');">
+          <button type="submit" class="btn-logout">🗑️ Excluir</button></form>
+      </p>
+      <h3 style="margin:1rem 0 .6rem;font-size:1rem;">Capa do grupo</h3>
+      <form action="{{ url_for('grupo_foto', grupo_id=grupo.id) }}" method="POST" enctype="multipart/form-data">
+        <input type="file" name="foto" accept="image/jpeg,image/png,image/webp" required>
+        <span class="hint">JPEG, PNG ou WEBP — até 2 MB.</span><br>
+        <button type="submit" style="margin-top:.8rem;">⬆️ Enviar capa</button>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+</body>
+</html>

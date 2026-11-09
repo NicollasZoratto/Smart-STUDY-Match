@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>StudyMatch — Meus grupos</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <div class="container">
+    <div class="glass-panel">
+      <div class="top-bar">
+        <h1>📚 Grupos de estudo</h1>
+        <div class="user-info">
+          <span>{{ usuario }}</span>
+          <span class="badge {{ 'admin' if role == 'admin' else '' }}">{{ role }}</span>
+          {% if premium %}<span class="badge premium">👑 Pro</span>{% endif %}
+          <a href="{{ url_for('grupos_lista') }}" class="btn-secondary">📚 Grupos</a>
+          <a href="{{ url_for('perfil') }}" class="btn-secondary">👤 Perfil</a>
+          {% if role == 'admin' %}<a href="{{ url_for('admin_logs') }}" class="btn-secondary">📜 Logs</a>{% endif %}
+          <a href="/logout" class="btn-logout">Sair</a>
+        </div>
+      </div>
+      {% with messages = get_flashed_messages(with_categories=true) %}
+      {% for category, message in messages %}
+      <div class="alert alert-{{ category if category != 'error' else 'danger' }}">{{ message }}</div>
+      {% endfor %}
+      {% endwith %}
+      {% if role == 'lider' and not premium %}
+      <div class="alert alert-success" style="display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap;">
+        <span>Plano grátis: {{ grupos|length }}/{{ limite }} grupo(s). O Pro libera grupos ilimitados.</span>
+        <form action="{{ url_for('assinar') }}" method="POST"><button type="submit" class="btn-primary">👑 Assinar Pro — R$ 9,90/mês</button></form>
+      </div>
+      {% endif %}
+      {% if pode_criar %}<p style="margin-bottom:1rem;"><a href="{{ url_for('grupo_novo') }}" class="btn-primary">➕ Novo grupo</a></p>{% endif %}
+      {% if grupos %}
+      <div class="grupo-grid">
+        {% for g in grupos %}
+        <div class="grupo-card">
+          <div>
+            {% if g.foto_url %}<img src="{{ g.foto_url }}" alt="Capa de {{ g.titulo }}">{% endif %}
+            <div class="grupo-title">{{ g.titulo }}</div>
+            <span class="grupo-meta">📖 {{ g.disciplina }}</span><br>
+            <span class="grupo-meta">🕘 {{ g.dia_semana_nome }}, {{ g.horario_inicio }}–{{ g.horario_fim }} · {{ g.modalidade }}</span><br>
+            <span class="grupo-meta">👥 {{ g.membros }}/{{ g.vagas }} vagas</span>
+          </div>
+          <a href="{{ url_for('grupo_detalhe', grupo_id=g.id) }}" class="btn-secondary" style="margin-top:.9rem;display:block;text-align:center;">Abrir</a>
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <p class="empty-state">
+        {% if pode_criar %}Você ainda não criou nenhum grupo de estudo. Clique em “Novo grupo”.
+        {% else %}Você ainda não participa de nenhum grupo. Quando um líder te incluir, ele aparece aqui.{% endif %}
+      </p>
+      {% endif %}
+    </div>
+  </div>
+</body>
+</html>

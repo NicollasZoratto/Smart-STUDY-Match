@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>StudyMatch — Encontre seu grupo de estudos</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <div class="container">
+    <div class="glass-panel" style="text-align:center;">
+      <h1 style="font-size:2.4rem;margin-bottom:.6rem;">📚 StudyMatch</h1>
+      <p style="font-size:1.2rem;margin-bottom:1.5rem;">Encontre seu grupo de estudos ideal: <strong>match por disciplina e horário</strong>.</p>
+      <div class="grupo-grid" style="margin:2rem 0;text-align:left;">
+        <div class="grupo-card"><div class="grupo-title">🎯 Mesma matéria</div><p>Grupos de colegas que estudam a <em>sua</em> disciplina, não um grupo genérico.</p></div>
+        <div class="grupo-card"><div class="grupo-title">🕘 Horário que cabe</div><p>Pensado para quem trabalha de dia e estuda à noite: dia e hora combinados desde o início.</p></div>
+        <div class="grupo-card"><div class="grupo-title">⚡ Em minutos</div><p>Crie um grupo ou entre em um ativo, sem caçar parceiros no WhatsApp da turma.</p></div>
+      </div>
+      <p>Plano grátis: {{ limite }} grupo(s) próprio(s). <strong>Pro (R$ 9,90/mês)</strong>: grupos ilimitados e selo 👑.</p>
+      <p style="margin-top:1.5rem;">
+        <a href="{{ url_for('login') }}" class="btn-primary" style="padding:.8rem 1.6rem;display:inline-block;">Criar conta grátis</a>
+        <a href="{{ url_for('login') }}" class="btn-secondary" style="padding:.8rem 1.6rem;display:inline-block;">Já tenho conta</a>
+      </p>
+    </div>
+  </div>
+</body>
+</html>

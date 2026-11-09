@@ -5,6 +5,8 @@
 Projeto da disciplina ISW055 (Introdução à Computação em Nuvem — FATEC), acompanhado pelo professor [github.com/siriani](https://github.com/siriani).
 Este repositório é a continuação do **NicoFlix** (catálogo de filmes do Tom Hanks), espelhado com todo o histórico de commits. Arquitetura, documentação reversa e instruções de deploy do projeto original estão em [`docs/README_NicoFlix_filmes.md`](docs/README_NicoFlix_filmes.md).
 
+**🌐 Sistema no ar:** https://nicollas-carvalho-isw055.lapps.studio — veja a seção [Atividade 10](#atividade-10--negócio-no-ar-studymatch).
+
 ---
 
 ## 1. Nome e frase
@@ -105,3 +107,81 @@ Assinatura mensal recorrente cobrada pelo Stripe (já integrado no projeto, em m
 ## 10. Próximas entregas
 
 O roteiro (backlog) está nas issues deste repositório e resumido em [`docs/BACKLOG.md`](docs/BACKLOG.md).
+
+
+---
+
+## Atividade 10 — Negócio no ar (StudyMatch)
+
+**URL do sistema:** https://nicollas-carvalho-isw055.lapps.studio (landing page pública, sem login).
+
+### O que mudou do NicoFlix para o StudyMatch
+O catálogo de filmes saiu; entrou o recurso principal do negócio, o **grupo de estudo**. Login, papéis, logs, upload e Stripe foram mantidos e mudaram de assunto. A stack no Portainer é a mesma, apontando para este repositório.
+
+### Arquitetura atualizada
+
+```mermaid
+flowchart LR
+    U([Navegador]) -->|HTTPS| WEB
+    subgraph Stack["Stack única no Portainer (VM) — rede interna"]
+        WEB["web / app_principal<br/>landing, telas, API /api/grupos"]
+        AUTH["auth_service<br/>login, 2FA, papéis admin, lider, estudante"]
+        LOG["log_service"]
+        REDIS[("Redis<br/>eventos de negócio")]
+        MINIO[("MinIO<br/>capas dos grupos e fotos")]
+    end
+    DB[("MariaDB<br/>disciplinas, grupos, grupo_membros,<br/>perfis, assinaturas, usuarios")]
+    STRIPE[/"Stripe (plano Pro)"/]
+    SMTP[/"Mailtrap (e-mail)"/]
+    U -.->|URL pré-assinada da imagem| MINIO
+    U -->|checkout hospedado| STRIPE
+    WEB -->|valida o JWT a cada requisição| AUTH
+    WEB -->|POST /log| LOG
+    WEB -->|upload e URL assinada| MINIO
+    WEB -->|SQL| DB
+    WEB -->|cria Checkout Session| STRIPE
+    STRIPE ==>|webhook assinado /stripe/webhook| WEB
+    AUTH -->|usuarios, reset_tokens| DB
+    AUTH --> SMTP
+    AUTH --> LOG
+    LOG --> REDIS
+```
+
+### Papéis (auth-service)
+| Papel | Como se obtém | Pode |
+|---|---|---|
+| `admin` | primeiro cadastro do sistema | ver e gerenciar todos os grupos, ver os logs |
+| `lider` | escolhido no cadastro | criar, editar e apagar **os próprios** grupos (plano grátis: 1 grupo; Pro: ilimitados) |
+| `estudante` | escolhido no cadastro | ver os grupos de que participa; **não** cria, edita nem apaga grupos |
+
+As regras valem na API: ação proibida responde **403** mesmo chamando direto, sem passar pela tela. O usuário só vê e altera os próprios dados: abrir o ID de um grupo de outra pessoa responde **403** (registro inexistente responde 404).
+
+### Modelo de dados e migração
+Script versionado: [`db/001_dominio.sql`](db/001_dominio.sql) (tabelas `disciplinas`, `grupos`, `grupo_membros`, com chaves estrangeiras, e seed de disciplinas). O `app_principal` roda os `db/*.sql` em ordem ao iniciar; quem clonar o repositório recria o banco subindo a stack, ou manualmente com `mysql ... < db/001_dominio.sql`. `db/000_limpeza_legado.sql` remove as tabelas do projeto anterior.
+
+### API REST de grupos
+Autenticada pela sessão do navegador (ou `Authorization: Bearer <JWT>`).
+
+| Método e rota | Função | Respostas |
+|---|---|---|
+| `GET /api/grupos` | lista os grupos que o usuário pode ver | 200, 401 |
+| `POST /api/grupos` | cria (`titulo, disciplina_id, dia_semana 0-6, horario_inicio, horario_fim, vagas, modalidade, descricao`) | 201, 400, 403 (papel ou limite do plano grátis) |
+| `GET /api/grupos/<id>` | detalha | 200, 403 (de outro usuário), 404 |
+| `PUT /api/grupos/<id>` | edita | 200, 400, 403, 404 |
+| `DELETE /api/grupos/<id>` | remove | 204, 403, 404 |
+| `POST /api/grupos/<id>/foto` | capa do grupo (multipart `foto`, até 2 MB, JPEG/PNG/WEBP) → MinIO | 200, 400, 403 |
+| `GET /api/disciplinas` | disciplinas disponíveis | 200 |
+
+Para testar direto, com o login feito no navegador, abra o console (F12) e rode, por exemplo, `fetch('/api/grupos/1').then(r => console.log(r.status))`.
+
+### Telas
+`/` (landing pública) · `/grupos` (lista) · `/grupos/novo` · `/grupos/<id>` (detalhe e capa) · `/grupos/<id>/editar` · `/perfil` · `/admin/logs` (admin).
+
+### Eventos de negócio no log
+`grupo_criado`, `grupo_editado`, `grupo_removido`, `foto_grupo_enviada`, `limite_grupos_gratis_atingido`, `assinatura_*`, `403_*` (acessos negados), além de login e logout. O admin vê tudo em `/admin/logs`, com usuário, ação, IP e data.
+
+### Plano Pro (Stripe)
+Free: 1 grupo próprio por líder. Pro, R$ 9,90/mês: grupos ilimitados e selo 👑. O Pro só é concedido pelo webhook assinado do Stripe (detalhes em [`docs/README_NicoFlix_filmes.md`](docs/README_NicoFlix_filmes.md)).
+
+### Trocar a stack do Portainer para este repositório
+Stacks → sua stack → *Editor* → em **Repository URL** coloque `https://github.com/NicollasZoratto/Smart-STUDY-Match` (branch `main`), mantenha as variáveis de ambiente (remova `TMDB_API_KEY` se existir) → *Pull and redeploy*.

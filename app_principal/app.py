@@ -1,3 +1,5 @@
+import functools
+import glob
 import io
 import json
 import os
@@ -6,7 +8,7 @@ import datetime
 
 import requests
 import stripe
-from flask import Flask, render_template, request, redirect, url_for, session, flash, abort
+from flask import Flask, render_template, request, redirect, url_for, session, flash, abort, jsonify
 import mysql.connector
 from minio import Minio
 from minio.error import S3Error
@@ -15,7 +17,6 @@ from PIL import Image
 app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", "chave_secreta_padrao_desenv")
 
-TMDB_API_KEY = os.getenv("TMDB_API_KEY", "6566259ba55415e75fcdaaec316a8be7")
 AUTH_SERVICE_URL = os.getenv("AUTH_SERVICE_URL", "http://auth_service:5001")
 LOG_SERVICE_URL = os.getenv("LOG_SERVICE_URL", "http://log_service:5002")
 
@@ -37,7 +38,7 @@ MINIO_PUBLIC_PORT = os.getenv("MINIO_PUBLIC_PORT", "29517")
 MINIO_REGION = "us-east-1"
 MINIO_ACCESS_KEY = os.getenv("MINIO_ROOT_USER", "nicoflix_admin")
 MINIO_SECRET_KEY = os.getenv("MINIO_ROOT_PASSWORD", "nicoflix_minio_secret")
-MINIO_BUCKET = os.getenv("MINIO_BUCKET", "nicoflix-perfis")
+MINIO_BUCKET = os.getenv("MINIO_BUCKET", "studymatch-arquivos")
 MINIO_SECURE = os.getenv("MINIO_SECURE", "false").lower() == "true"
 PRESIGNED_URL_EXPIRY_SECONDS = int(os.getenv("PRESIGNED_URL_EXPIRY_SECONDS", "3600"))  # 1h
 
@@ -46,8 +47,8 @@ PRESIGNED_URL_EXPIRY_SECONDS = int(os.getenv("PRESIGNED_URL_EXPIRY_SECONDS", "36
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")        # sk_test_...
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")  # whsec_...
 STRIPE_PRICE_ID = os.getenv("STRIPE_PRICE_ID", "")            # price_... (opcional)
-# Benefício Premium: favoritos ilimitados. Plano grátis tem este teto.
-FAVORITOS_LIMITE_GRATIS = int(os.getenv("FAVORITOS_LIMITE_GRATIS", "5"))
+# Benefício Pro: grupos próprios ilimitados. Plano grátis tem este teto (líder).
+GRUPOS_LIMITE_GRATIS = int(os.getenv("GRUPOS_LIMITE_GRATIS", "1"))
 if STRIPE_SECRET_KEY:
     stripe.api_key = STRIPE_SECRET_KEY
 
@@ -70,27 +71,10 @@ def get_db():
 
 
 def init_app_tables():
-    """Garante a existência das tabelas de favoritos, comentários e perfis."""
+    """Garante perfis/assinaturas e roda as migrações db/*.sql do domínio (grupos)."""
     try:
         db = get_db()
         cursor = db.cursor()
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS comentarios (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                user_id INT NOT NULL,
-                movie_id INT NOT NULL,
-                comentario TEXT NOT NULL,
-                UNIQUE KEY user_movie (user_id, movie_id)
-            )
-        """)
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS favoritos (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                user_id INT NOT NULL,
-                movie_id INT NOT NULL,
-                UNIQUE KEY user_movie_fav (user_id, movie_id)
-            )
-        """)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS perfis (
                 user_id INT PRIMARY KEY,
@@ -115,6 +99,38 @@ def init_app_tables():
         db.close()
     except Exception as e:
         print(f"Erro ao inicializar tabelas da app principal: {e}")
+    aplicar_migracoes()
+
+
+def _pasta_db():
+    base = os.path.dirname(os.path.abspath(__file__))
+    for cand in (os.path.join(base, 'db'), os.path.join(os.path.dirname(base), 'db')):
+        if os.path.isdir(cand):
+            return cand
+    return None
+
+
+def aplicar_migracoes():
+    """Executa db/*.sql em ordem alfabética (scripts idempotentes, versionados no Git)."""
+    pasta = _pasta_db()
+    if not pasta:
+        print("[DB] Pasta db/ não encontrada; migrações ignoradas.")
+        return
+    try:
+        db = get_db()
+        cursor = db.cursor()
+        for arquivo in sorted(glob.glob(os.path.join(pasta, '*.sql'))):
+            with open(arquivo, encoding='utf-8') as f:
+                linhas = [l for l in f.read().splitlines() if not l.strip().startswith('--')]
+            for comando in "\n".join(linhas).split(';'):
+                if comando.strip():
+                    cursor.execute(comando)
+            print(f"[DB] Migração aplicada: {os.path.basename(arquivo)}")
+        db.commit()
+        cursor.close()
+        db.close()
+    except Exception as e:
+        print(f"[DB ERROR] Falha ao aplicar migrações: {e}")
 
 
 def init_minio_bucket():
@@ -145,6 +161,10 @@ def log_event(usuario_id, acao):
 def get_current_user():
     token = session.get('jwt_token')
     if not token:
+        cabecalho = request.headers.get('Authorization', '')
+        if cabecalho.lower().startswith('bearer '):
+            token = cabecalho[7:].strip()
+    if not token:
         return None
     try:
         res = requests.post(f"{AUTH_SERVICE_URL}/validate-token", json={"token": token}, timeout=5)
@@ -168,19 +188,6 @@ def usuario_e_premium(user_id):
     except Exception as e:
         print(f"Erro ao consultar premium: {e}")
         return False
-
-
-def fetch_tom_hanks_movies():
-    url = f"https://api.themoviedb.org/3/person/31/movie_credits?api_key={TMDB_API_KEY}&language=pt-BR"
-    try:
-        response = requests.get(url, timeout=5)
-        if response.status_code == 200:
-            data = response.json()
-            cast = data.get('cast', [])
-            return sorted(cast, key=lambda x: x.get('release_date', ''), reverse=True)
-    except Exception as e:
-        print(f"Erro TMDB: {e}")
-    return []
 
 
 def get_or_create_perfil(user_id, username_padrao):
@@ -248,14 +255,16 @@ def _buscar_usuarios():
 _ACAO_LABELS = {
     'login': '🔓 Login',
     'logout': '🔒 Logout',
-    'favoritar': '⭐ Favoritou',
-    'desfavoritar': '☆ Desfavoritou',
+    'grupo_criado': '📚 Grupo de estudo criado',
+    'grupo_editado': '✏️ Grupo de estudo editado',
+    'grupo_removido': '🗑️ Grupo de estudo removido',
+    'foto_grupo_enviada': '🖼️ Foto do grupo enviada',
     'editar_perfil': '📝 Editou o perfil',
     'upload_foto_perfil': '🖼️ Trocou a foto de perfil',
-    'assinatura_checkout_iniciado': '💳 Iniciou checkout Premium',
-    'assinatura_premium_ativada': '👑 Premium ativado (webhook Stripe)',
-    'assinatura_premium_cancelada': '❎ Premium cancelado (webhook Stripe)',
-    'limite_favoritos_gratis_atingido': '🚫 Limite de favoritos do plano grátis',
+    'assinatura_checkout_iniciado': '💳 Iniciou checkout Pro',
+    'assinatura_premium_ativada': '👑 Plano Pro ativado (webhook Stripe)',
+    'assinatura_premium_cancelada': '❎ Plano Pro cancelado (webhook Stripe)',
+    'limite_grupos_gratis_atingido': '🚫 Limite de grupos do plano grátis',
 }
 
 
@@ -265,48 +274,7 @@ def _rotular_acao(acao_bruta):
         return _ACAO_LABELS[base]
     if base.startswith('403'):
         return f"🚫 Ação negada (403) — {acao_bruta}"
-    if base.startswith('comentar'):
-        return f"💬 Comentou — {acao_bruta}"
-    if base.startswith('apagar_comentario'):
-        return f"🗑️ Apagou comentário — {acao_bruta}"
     return acao_bruta
-
-
-@app.route('/')
-def index():
-    user = get_current_user()
-    if not user:
-        return redirect(url_for('login'))
-
-    user_id = user['user_id']
-    movies = fetch_tom_hanks_movies()
-
-    comentarios = {}
-    favoritos = []
-    try:
-        db = get_db()
-        cursor = db.cursor(dictionary=True)
-        cursor.execute("SELECT movie_id, comentario FROM comentarios WHERE user_id = %s", (user_id,))
-        comentarios = {row['movie_id']: row['comentario'] for row in cursor.fetchall()}
-
-        cursor.execute("SELECT movie_id FROM favoritos WHERE user_id = %s", (user_id,))
-        favoritos = [row['movie_id'] for row in cursor.fetchall()]
-
-        cursor.close()
-        db.close()
-    except Exception as e:
-        print(f"Erro ao buscar dados do usuário: {e}")
-
-    return render_template(
-        'index.html',
-        filmes=movies,
-        comentarios=comentarios,
-        favoritos=favoritos,
-        usuario=user['username'],
-        role=user.get('role', 'usuario'),
-        premium=usuario_e_premium(user_id),
-        limite_favoritos=FAVORITOS_LIMITE_GRATIS,
-    )
 
 
 @app.route('/login', methods=['GET', 'POST'])
@@ -341,7 +309,8 @@ def cadastro():
         try:
             res = requests.post(
                 f"{AUTH_SERVICE_URL}/register",
-                json={"username": username, "email": email, "password": password},
+                json={"username": username, "email": email, "password": password,
+                      "role": request.form.get('role', 'estudante')},
                 timeout=5
             )
             if res.status_code == 201:
@@ -374,7 +343,7 @@ def verify_2fa_page():
                 data = res.json()
                 session.pop('pending_username', None)
                 session['jwt_token'] = data['token']
-                return redirect(url_for('index'))
+                return redirect(url_for('grupos_lista'))
             else:
                 err_msg = res.json().get('error', 'Código 2FA inválido')
                 flash(err_msg, "danger")
@@ -448,109 +417,6 @@ def logout():
     return redirect(url_for('login'))
 
 
-@app.route('/comentar', methods=['POST'])
-def comentar():
-    user = get_current_user()
-    if not user:
-        return redirect(url_for('login'))
-
-    movie_id = request.form.get('movie_id')
-    comentario = request.form.get('comentario')
-
-    try:
-        db = get_db()
-        cursor = db.cursor()
-        cursor.execute("""
-            INSERT INTO comentarios (user_id, movie_id, comentario)
-            VALUES (%s, %s, %s)
-            ON DUPLICATE KEY UPDATE comentario = %s
-        """, (user['user_id'], movie_id, comentario, comentario))
-        db.commit()
-        cursor.close()
-        db.close()
-        log_event(user['user_id'], f'comentar:filme_{movie_id}')
-    except Exception as e:
-        print(f"Erro ao salvar comentário: {e}")
-
-    return redirect(url_for('index'))
-
-
-@app.route('/comentar/excluir', methods=['POST'])
-def excluir_comentario():
-    user = get_current_user()
-    if not user:
-        return redirect(url_for('login'))
-
-    movie_id = request.form.get('movie_id')
-    target_user_id = request.form.get('user_id', user['user_id'])
-    redirect_to = request.form.get('redirect_to', 'index')
-
-    try:
-        target_user_id = int(target_user_id)
-    except (TypeError, ValueError):
-        abort(400)
-
-    is_own_comment = target_user_id == int(user['user_id'])
-    is_admin = user.get('role') == 'admin'
-
-    if not is_own_comment and not is_admin:
-        log_event(user['user_id'], f'403_apagar_comentario_negado:filme_{movie_id}')
-        abort(403)
-
-    try:
-        db = get_db()
-        cursor = db.cursor()
-        cursor.execute(
-            "DELETE FROM comentarios WHERE user_id = %s AND movie_id = %s",
-            (target_user_id, movie_id)
-        )
-        db.commit()
-        cursor.close()
-        db.close()
-        acao = 'apagar_comentario_proprio' if is_own_comment else 'apagar_comentario_moderacao'
-        log_event(user['user_id'], f'{acao}:filme_{movie_id}:usuario_{target_user_id}')
-    except Exception as e:
-        print(f"Erro ao excluir comentário: {e}")
-
-    if redirect_to == 'admin' and is_admin:
-        return redirect(url_for('admin_comentarios'))
-    return redirect(url_for('index'))
-
-
-@app.route('/admin/comentarios')
-def admin_comentarios():
-    user = get_current_user()
-    if not user:
-        return redirect(url_for('login'))
-    if user.get('role') != 'admin':
-        log_event(user['user_id'], '403_acesso_moderacao_negado')
-        abort(403)
-
-    movies = fetch_tom_hanks_movies()
-    titulos_filmes = {m['id']: m.get('title', f"Filme #{m['id']}") for m in movies}
-    usuarios_por_id = _buscar_usuarios()
-
-    comentarios = []
-    try:
-        db = get_db()
-        cursor = db.cursor(dictionary=True)
-        cursor.execute("SELECT id, user_id, movie_id, comentario FROM comentarios ORDER BY movie_id, user_id")
-        for row in cursor.fetchall():
-            comentarios.append({
-                "user_id": row['user_id'],
-                "username": usuarios_por_id.get(row['user_id'], f"Usuário #{row['user_id']}"),
-                "movie_id": row['movie_id'],
-                "titulo_filme": titulos_filmes.get(row['movie_id'], f"Filme #{row['movie_id']}"),
-                "comentario": row['comentario'],
-            })
-        cursor.close()
-        db.close()
-    except Exception as e:
-        print(f"Erro ao buscar comentários para moderação: {e}")
-
-    return render_template('admin_comentarios.html', comentarios=comentarios, usuario=user['username'])
-
-
 @app.route('/admin/logs')
 def admin_logs():
     user = get_current_user()
@@ -585,48 +451,6 @@ def admin_logs():
     return render_template('admin_logs.html', eventos=eventos, usuario=user['username'])
 
 
-@app.route('/favoritar', methods=['POST'])
-def favoritar():
-    user = get_current_user()
-    if not user:
-        return redirect(url_for('login'))
-
-    movie_id = request.form.get('movie_id')
-
-    try:
-        db = get_db()
-        cursor = db.cursor()
-        cursor.execute("SELECT id FROM favoritos WHERE user_id = %s AND movie_id = %s", (user['user_id'], movie_id))
-        existente = cursor.fetchone()
-
-        if existente:
-            cursor.execute("DELETE FROM favoritos WHERE id = %s", (existente[0],))
-            acao = 'desfavoritar'
-        else:
-            # Benefício Premium: plano grátis tem teto de favoritos (checado no backend).
-            if not usuario_e_premium(user['user_id']):
-                cursor.execute("SELECT COUNT(*) FROM favoritos WHERE user_id = %s", (user['user_id'],))
-                row = cursor.fetchone()
-                total = row[0] if row else 0
-                if isinstance(total, int) and total >= FAVORITOS_LIMITE_GRATIS:
-                    cursor.close(); db.close()
-                    flash(f'Plano grátis permite até {FAVORITOS_LIMITE_GRATIS} favoritos. '
-                          'Assine o Premium para favoritos ilimitados!', 'error')
-                    log_event(user['user_id'], f'limite_favoritos_gratis_atingido:filme_{movie_id}')
-                    return redirect(url_for('index'))
-            cursor.execute("INSERT INTO favoritos (user_id, movie_id) VALUES (%s, %s)", (user['user_id'], movie_id))
-            acao = 'favoritar'
-
-        db.commit()
-        cursor.close()
-        db.close()
-        log_event(user['user_id'], f'{acao}:filme_{movie_id}')
-    except Exception as e:
-        print(f"Erro ao favoritar: {e}")
-
-    return redirect(url_for('index'))
-
-
 @app.route('/assinar', methods=['POST'])
 def assinar():
     """Cria uma Checkout Session (modo assinatura) e redireciona o usuário logado ao Stripe."""
@@ -637,7 +461,7 @@ def assinar():
         flash('Pagamentos não configurados no servidor (STRIPE_SECRET_KEY ausente).', 'error')
         return redirect(url_for('perfil'))
     if usuario_e_premium(user['user_id']):
-        flash('Você já é Premium. 👑', 'success')
+        flash('Você já é Pro. 👑', 'success')
         return redirect(url_for('perfil'))
 
     if STRIPE_PRICE_ID:
@@ -646,7 +470,7 @@ def assinar():
         item = {"quantity": 1, "price_data": {
             "currency": "brl", "unit_amount": 990,
             "recurring": {"interval": "month"},
-            "product_data": {"name": "NicoFlix Premium"}}}
+            "product_data": {"name": "StudyMatch Pro"}}}
     base = request.host_url.rstrip('/')
     try:
         checkout = stripe.checkout.Session.create(
@@ -672,7 +496,7 @@ def assinatura_sucesso():
     if not user:
         return redirect(url_for('login'))
     if usuario_e_premium(user['user_id']):
-        flash('Pagamento confirmado! Você agora é Premium. 👑', 'success')
+        flash('Pagamento confirmado! Seu plano Pro está ativo. 👑', 'success')
     else:
         flash('Pagamento recebido. Estamos aguardando a confirmação do Stripe — '
               'atualize a página em alguns segundos.', 'success')
@@ -729,47 +553,6 @@ def stripe_webhook():
 
 def _log_sem_request(usuario_id, acao):
     log_event(usuario_id, acao)
-
-
-@app.route('/perfil')
-def perfil():
-    """Página de perfil do usuário logado: nome, bio, foto e os filmes
-    favoritados (reaproveitando a tabela 'favoritos' desde a atividade 2)."""
-    user = get_current_user()
-    if not user:
-        return redirect(url_for('login'))
-
-    dados_perfil = get_or_create_perfil(user['user_id'], user['username'])
-    foto_url = gerar_url_foto(dados_perfil.get('foto_key'))
-
-    favoritos_filmes = []
-    try:
-        db = get_db()
-        cursor = db.cursor(dictionary=True)
-        cursor.execute("SELECT movie_id FROM favoritos WHERE user_id = %s", (user['user_id'],))
-        ids_favoritos = {row['movie_id'] for row in cursor.fetchall()}
-        cursor.close()
-        db.close()
-
-        if ids_favoritos:
-            for m in fetch_tom_hanks_movies():
-                if m['id'] in ids_favoritos:
-                    favoritos_filmes.append(m)
-    except Exception as e:
-        print(f"Erro ao buscar favoritos do perfil: {e}")
-
-    return render_template(
-        'perfil.html',
-        usuario=user['username'],
-        role=user.get('role', 'usuario'),
-        perfil=dados_perfil,
-        foto_url=foto_url,
-        favoritos_filmes=favoritos_filmes,
-        meu_user_id=user['user_id'],
-        premium=usuario_e_premium(user['user_id']),
-        limite_favoritos=FAVORITOS_LIMITE_GRATIS,
-        total_favoritos=len(favoritos_filmes),
-    )
 
 
 @app.route('/perfil/<int:user_id>/editar', methods=['POST'])
@@ -889,6 +672,451 @@ def upload_foto_perfil(user_id):
         flash("Erro ao atualizar a foto de perfil.", "danger")
 
     return redirect(url_for('perfil'))
+
+
+# =====================================================================
+# StudyMatch — domínio: grupos de estudo (recurso principal do negócio)
+# =====================================================================
+PAPEIS = ("admin", "lider", "estudante")
+DIAS_SEMANA = ["Domingo", "Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado"]
+MODALIDADES = ("online", "presencial")
+
+_SQL_GRUPO = """
+    SELECT g.*, d.nome AS disciplina_nome,
+           (SELECT COUNT(*) FROM grupo_membros m WHERE m.grupo_id = g.id) AS membros
+    FROM grupos g JOIN disciplinas d ON d.id = g.disciplina_id
+"""
+
+
+class ErroNegocio(Exception):
+    """Erro com status HTTP, usado igualmente pela API (JSON) e pelas telas (HTML)."""
+    def __init__(self, status, mensagem, codigo=None):
+        super().__init__(mensagem)
+        self.status, self.mensagem, self.codigo = status, mensagem, codigo
+
+
+def papel_de(user):
+    """'usuario' era o papel do projeto anterior: vale como 'estudante'."""
+    role = (user or {}).get('role', 'estudante')
+    return 'estudante' if role == 'usuario' else role
+
+
+def _hhmm(valor):
+    if isinstance(valor, datetime.timedelta):
+        total = int(valor.total_seconds())
+        return f"{total // 3600:02d}:{(total % 3600) // 60:02d}"
+    if isinstance(valor, datetime.time):
+        return valor.strftime("%H:%M")
+    return str(valor)[:5]
+
+
+def grupo_para_dict(row):
+    return {
+        "id": row["id"],
+        "lider_id": row["lider_id"],
+        "disciplina_id": row["disciplina_id"],
+        "disciplina": row.get("disciplina_nome"),
+        "titulo": row["titulo"],
+        "descricao": row.get("descricao") or "",
+        "dia_semana": int(row["dia_semana"]),
+        "dia_semana_nome": DIAS_SEMANA[int(row["dia_semana"]) % 7],
+        "horario_inicio": _hhmm(row["horario_inicio"]),
+        "horario_fim": _hhmm(row["horario_fim"]),
+        "vagas": int(row["vagas"]),
+        "membros": int(row.get("membros") or 0),
+        "modalidade": row["modalidade"],
+        "foto_url": gerar_url_foto(row.get("foto_key")),
+    }
+
+
+def _consulta(sql, params=(), um=False):
+    db = get_db()
+    cursor = db.cursor(dictionary=True)
+    cursor.execute(sql, params)
+    res = cursor.fetchone() if um else cursor.fetchall()
+    cursor.close()
+    db.close()
+    return res
+
+
+def carregar_grupo(grupo_id):
+    return _consulta(_SQL_GRUPO + " WHERE g.id = %s", (grupo_id,), um=True)
+
+
+def listar_grupos(user):
+    """Cada papel enxerga só o que é seu: admin vê tudo, líder os próprios, estudante os que participa."""
+    papel = papel_de(user)
+    if papel == 'admin':
+        rows = _consulta(_SQL_GRUPO + " ORDER BY g.id DESC")
+    elif papel == 'lider':
+        rows = _consulta(_SQL_GRUPO + " WHERE g.lider_id = %s ORDER BY g.id DESC", (user['user_id'],))
+    else:
+        rows = _consulta(_SQL_GRUPO + " WHERE g.id IN (SELECT grupo_id FROM grupo_membros WHERE user_id = %s)"
+                         " ORDER BY g.id DESC", (user['user_id'],))
+    return [grupo_para_dict(r) for r in rows]
+
+
+def listar_disciplinas():
+    try:
+        return _consulta("SELECT id, codigo, nome FROM disciplinas ORDER BY nome")
+    except Exception as e:
+        print(f"Erro ao listar disciplinas: {e}")
+        return []
+
+
+def contar_grupos_do_lider(user_id):
+    row = _consulta("SELECT COUNT(*) AS total FROM grupos WHERE lider_id = %s", (user_id,), um=True)
+    return int(row['total']) if row else 0
+
+
+def eh_membro(grupo_id, user_id):
+    return bool(_consulta("SELECT 1 AS x FROM grupo_membros WHERE grupo_id = %s AND user_id = %s",
+                          (grupo_id, user_id), um=True))
+
+
+def exigir_papel_escrita(user, acao):
+    if papel_de(user) not in ('admin', 'lider'):
+        log_event(user['user_id'], f'403_{acao}_grupo_negado')
+        raise ErroNegocio(403, "Seu papel não permite esta ação. Só líderes de grupo e admins.", "papel_sem_permissao")
+
+
+def exigir_dono(user, grupo, acao):
+    """Isolamento: só o líder dono (ou admin) altera o grupo. Outro usuário recebe 403."""
+    exigir_papel_escrita(user, acao)
+    if papel_de(user) != 'admin' and int(grupo['lider_id']) != int(user['user_id']):
+        log_event(user['user_id'], f'403_{acao}_grupo_negado:grupo_{grupo["id"]}')
+        raise ErroNegocio(403, "Este grupo pertence a outro usuário.", "grupo_de_outro_usuario")
+
+
+def obter_grupo_visivel(user, grupo_id):
+    grupo = carregar_grupo(grupo_id)
+    if not grupo:
+        raise ErroNegocio(404, "Grupo não encontrado.")
+    if papel_de(user) == 'admin' or int(grupo['lider_id']) == int(user['user_id']) \
+            or eh_membro(grupo_id, user['user_id']):
+        return grupo
+    log_event(user['user_id'], f'403_acesso_grupo_alheio:grupo_{grupo_id}')
+    raise ErroNegocio(403, "Este grupo pertence a outro usuário.", "grupo_de_outro_usuario")
+
+
+def _validar_horario(valor, campo):
+    try:
+        h, m = str(valor).strip()[:5].split(':')
+        h, m = int(h), int(m)
+        if not (0 <= h < 24 and 0 <= m < 60):
+            raise ValueError
+        return f"{h:02d}:{m:02d}"
+    except Exception:
+        raise ErroNegocio(400, f"{campo} inválido. Use HH:MM.")
+
+
+def validar_dados_grupo(dados):
+    dados = dados or {}
+    titulo = (dados.get('titulo') or '').strip()
+    if not 3 <= len(titulo) <= 120:
+        raise ErroNegocio(400, "O título deve ter de 3 a 120 caracteres.")
+    descricao = (dados.get('descricao') or '').strip()
+    if len(descricao) > 500:
+        raise ErroNegocio(400, "A descrição pode ter no máximo 500 caracteres.")
+    try:
+        disciplina_id = int(dados.get('disciplina_id'))
+        dia = int(dados.get('dia_semana'))
+        vagas = int(dados.get('vagas', 5))
+    except (TypeError, ValueError):
+        raise ErroNegocio(400, "Disciplina, dia da semana e vagas devem ser números.")
+    if not 0 <= dia <= 6:
+        raise ErroNegocio(400, "Dia da semana deve ir de 0 (domingo) a 6 (sábado).")
+    if not 2 <= vagas <= 50:
+        raise ErroNegocio(400, "Vagas deve ficar entre 2 e 50.")
+    modalidade = (dados.get('modalidade') or 'online').strip().lower()
+    if modalidade not in MODALIDADES:
+        raise ErroNegocio(400, "Modalidade deve ser 'online' ou 'presencial'.")
+    inicio = _validar_horario(dados.get('horario_inicio'), "Horário de início")
+    fim = _validar_horario(dados.get('horario_fim'), "Horário de término")
+    if fim <= inicio:
+        raise ErroNegocio(400, "O horário de término deve ser depois do início.")
+    if not _consulta("SELECT id FROM disciplinas WHERE id = %s", (disciplina_id,), um=True):
+        raise ErroNegocio(400, "Disciplina inexistente.")
+    return {"titulo": titulo, "descricao": descricao, "disciplina_id": disciplina_id, "dia_semana": dia,
+            "horario_inicio": inicio, "horario_fim": fim, "vagas": vagas, "modalidade": modalidade}
+
+
+def criar_grupo(user, dados):
+    exigir_papel_escrita(user, 'criar')
+    if papel_de(user) == 'lider' and not usuario_e_premium(user['user_id']) \
+            and contar_grupos_do_lider(user['user_id']) >= GRUPOS_LIMITE_GRATIS:
+        log_event(user['user_id'], 'limite_grupos_gratis_atingido')
+        raise ErroNegocio(403, f"O plano grátis permite {GRUPOS_LIMITE_GRATIS} grupo(s). "
+                               "Assine o StudyMatch Pro para criar quantos quiser.", "limite_plano_gratis")
+    d = validar_dados_grupo(dados)
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute(
+        """INSERT INTO grupos (lider_id, disciplina_id, titulo, descricao, dia_semana,
+                               horario_inicio, horario_fim, vagas, modalidade)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+        (user['user_id'], d['disciplina_id'], d['titulo'], d['descricao'], d['dia_semana'],
+         d['horario_inicio'], d['horario_fim'], d['vagas'], d['modalidade']))
+    grupo_id = cursor.lastrowid
+    db.commit(); cursor.close(); db.close()
+    log_event(user['user_id'], f'grupo_criado:grupo_{grupo_id}')
+    return carregar_grupo(grupo_id)
+
+
+def atualizar_grupo(user, grupo_id, dados):
+    grupo = carregar_grupo(grupo_id)
+    if not grupo:
+        raise ErroNegocio(404, "Grupo não encontrado.")
+    exigir_dono(user, grupo, 'editar')
+    d = validar_dados_grupo(dados)
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute(
+        """UPDATE grupos SET disciplina_id=%s, titulo=%s, descricao=%s, dia_semana=%s,
+                             horario_inicio=%s, horario_fim=%s, vagas=%s, modalidade=%s WHERE id=%s""",
+        (d['disciplina_id'], d['titulo'], d['descricao'], d['dia_semana'], d['horario_inicio'],
+         d['horario_fim'], d['vagas'], d['modalidade'], grupo_id))
+    db.commit(); cursor.close(); db.close()
+    log_event(user['user_id'], f'grupo_editado:grupo_{grupo_id}')
+    return carregar_grupo(grupo_id)
+
+
+def remover_grupo(user, grupo_id):
+    grupo = carregar_grupo(grupo_id)
+    if not grupo:
+        raise ErroNegocio(404, "Grupo não encontrado.")
+    exigir_dono(user, grupo, 'excluir')
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute("DELETE FROM grupos WHERE id = %s", (grupo_id,))
+    db.commit(); cursor.close(); db.close()
+    if grupo.get('foto_key'):
+        try:
+            minio_client.remove_object(MINIO_BUCKET, grupo['foto_key'])
+        except Exception as e:
+            print(f"Aviso: não foi possível remover a foto do grupo: {e}")
+    log_event(user['user_id'], f'grupo_removido:grupo_{grupo_id}')
+
+
+def salvar_foto_grupo(user, grupo_id, arquivo):
+    """Upload da capa do grupo no MinIO, ligada ao registro certo (grupos.foto_key)."""
+    grupo = carregar_grupo(grupo_id)
+    if not grupo:
+        raise ErroNegocio(404, "Grupo não encontrado.")
+    exigir_dono(user, grupo, 'foto')
+    if not arquivo or arquivo.filename == '':
+        raise ErroNegocio(400, "Selecione uma imagem para enviar.")
+    conteudo = arquivo.read()
+    if len(conteudo) > MAX_FOTO_SIZE_BYTES:
+        raise ErroNegocio(400, "Imagem maior que o limite de 2 MB.")
+    try:
+        img = Image.open(io.BytesIO(conteudo))
+        img.verify()
+        formato = (img.format or '').lower()
+    except Exception:
+        raise ErroNegocio(400, "O arquivo enviado não é uma imagem válida.")
+    if formato not in FORMATOS_AGEITOS:
+        raise ErroNegocio(400, "Formato não suportado. Envie JPEG, PNG ou WEBP.")
+    chave = f"grupos/{grupo_id}/{uuid.uuid4().hex}.{'jpg' if formato == 'jpeg' else formato}"
+    try:
+        init_minio_bucket()
+        minio_client.put_object(MINIO_BUCKET, chave, io.BytesIO(conteudo),
+                                length=len(conteudo), content_type=f"image/{formato}")
+    except Exception as e:
+        print(f"Erro MinIO ao enviar capa do grupo: {e}")
+        raise ErroNegocio(502, "Erro ao enviar a imagem para o armazenamento.")
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute("UPDATE grupos SET foto_key = %s WHERE id = %s", (chave, grupo_id))
+    db.commit(); cursor.close(); db.close()
+    if grupo.get('foto_key'):
+        try:
+            minio_client.remove_object(MINIO_BUCKET, grupo['foto_key'])
+        except Exception as e:
+            print(f"Aviso: não foi possível remover a capa antiga: {e}")
+    log_event(user['user_id'], f'foto_grupo_enviada:grupo_{grupo_id}')
+    return carregar_grupo(grupo_id)
+
+
+def _dados_requisicao():
+    return request.get_json(silent=True) or request.form.to_dict()
+
+
+# ---------------- API REST (JSON) ----------------
+def _api(fn):
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        user = get_current_user()
+        if not user:
+            return jsonify({"error": "Não autenticado."}), 401
+        try:
+            return fn(user, *args, **kwargs)
+        except ErroNegocio as e:
+            return jsonify({"error": e.mensagem, "codigo": e.codigo}), e.status
+    return wrapper
+
+
+@app.route('/api/grupos', methods=['GET', 'POST'])
+@_api
+def api_grupos(user):
+    if request.method == 'POST':
+        return jsonify(grupo_para_dict(criar_grupo(user, _dados_requisicao()))), 201
+    return jsonify([g for g in listar_grupos(user)])
+
+
+@app.route('/api/grupos/<int:grupo_id>', methods=['GET', 'PUT', 'DELETE'])
+@_api
+def api_grupo(user, grupo_id):
+    if request.method == 'PUT':
+        return jsonify(grupo_para_dict(atualizar_grupo(user, grupo_id, _dados_requisicao())))
+    if request.method == 'DELETE':
+        remover_grupo(user, grupo_id)
+        return '', 204
+    return jsonify(grupo_para_dict(obter_grupo_visivel(user, grupo_id)))
+
+
+@app.route('/api/grupos/<int:grupo_id>/foto', methods=['POST'])
+@_api
+def api_grupo_foto(user, grupo_id):
+    return jsonify(grupo_para_dict(salvar_foto_grupo(user, grupo_id, request.files.get('foto'))))
+
+
+@app.route('/api/disciplinas', methods=['GET'])
+@_api
+def api_disciplinas(user):
+    return jsonify(listar_disciplinas())
+
+
+# ---------------- Telas (HTML) ----------------
+def _pagina(fn):
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        user = get_current_user()
+        if not user:
+            return redirect(url_for('login'))
+        try:
+            return fn(user, *args, **kwargs)
+        except ErroNegocio as e:
+            if e.status in (403, 404) and e.codigo != 'limite_plano_gratis':
+                abort(e.status)
+            flash(e.mensagem, 'danger')
+            return redirect(request.referrer or url_for('grupos_lista'))
+    return wrapper
+
+
+@app.route('/')
+def landing():
+    """Página pública (sem login) com a proposta de valor e o botão de criar conta."""
+    if get_current_user():
+        return redirect(url_for('grupos_lista'))
+    return render_template('landing.html', limite=GRUPOS_LIMITE_GRATIS)
+
+
+@app.route('/grupos')
+@_pagina
+def grupos_lista(user):
+    papel = papel_de(user)
+    try:
+        grupos = listar_grupos(user)
+    except Exception as e:
+        print(f"Erro ao listar grupos: {e}")
+        grupos = []
+    return render_template('grupos.html', grupos=grupos, usuario=user['username'], role=papel,
+                           premium=usuario_e_premium(user['user_id']), limite=GRUPOS_LIMITE_GRATIS,
+                           pode_criar=papel in ('admin', 'lider'))
+
+
+@app.route('/grupos/novo', methods=['GET', 'POST'])
+@_pagina
+def grupo_novo(user):
+    if request.method == 'POST':
+        try:
+            grupo = criar_grupo(user, request.form.to_dict())
+        except ErroNegocio as e:
+            if e.status != 400:
+                raise
+            flash(e.mensagem, 'danger')
+            return render_template('grupo_form.html', grupo=request.form, disciplinas=listar_disciplinas(),
+                                   usuario=user['username'], role=papel_de(user), editando=False,
+                                   dias=DIAS_SEMANA)
+        flash('Grupo criado!', 'success')
+        return redirect(url_for('grupo_detalhe', grupo_id=grupo['id']))
+    exigir_papel_escrita(user, 'criar')
+    return render_template('grupo_form.html', grupo={}, disciplinas=listar_disciplinas(),
+                           usuario=user['username'], role=papel_de(user), editando=False, dias=DIAS_SEMANA)
+
+
+@app.route('/grupos/<int:grupo_id>')
+@_pagina
+def grupo_detalhe(user, grupo_id):
+    grupo = grupo_para_dict(obter_grupo_visivel(user, grupo_id))
+    pode_editar = papel_de(user) == 'admin' or (papel_de(user) == 'lider' and grupo['lider_id'] == user['user_id'])
+    return render_template('grupo_detalhe.html', grupo=grupo, usuario=user['username'],
+                           role=papel_de(user), pode_editar=pode_editar)
+
+
+@app.route('/grupos/<int:grupo_id>/editar', methods=['GET', 'POST'])
+@_pagina
+def grupo_editar(user, grupo_id):
+    grupo = carregar_grupo(grupo_id)
+    if not grupo:
+        raise ErroNegocio(404, "Grupo não encontrado.")
+    exigir_dono(user, grupo, 'editar')
+    if request.method == 'POST':
+        try:
+            atualizar_grupo(user, grupo_id, request.form.to_dict())
+        except ErroNegocio as e:
+            if e.status != 400:
+                raise
+            flash(e.mensagem, 'danger')
+            return render_template('grupo_form.html', grupo=dict(request.form, id=grupo_id),
+                                   disciplinas=listar_disciplinas(), usuario=user['username'],
+                                   role=papel_de(user), editando=True, dias=DIAS_SEMANA)
+        flash('Grupo atualizado!', 'success')
+        return redirect(url_for('grupo_detalhe', grupo_id=grupo_id))
+    return render_template('grupo_form.html', grupo=grupo_para_dict(grupo), disciplinas=listar_disciplinas(),
+                           usuario=user['username'], role=papel_de(user), editando=True, dias=DIAS_SEMANA)
+
+
+@app.route('/grupos/<int:grupo_id>/excluir', methods=['POST'])
+@_pagina
+def grupo_excluir(user, grupo_id):
+    remover_grupo(user, grupo_id)
+    flash('Grupo removido.', 'success')
+    return redirect(url_for('grupos_lista'))
+
+
+@app.route('/grupos/<int:grupo_id>/foto', methods=['POST'])
+@_pagina
+def grupo_foto(user, grupo_id):
+    salvar_foto_grupo(user, grupo_id, request.files.get('foto'))
+    flash('Capa do grupo atualizada!', 'success')
+    return redirect(url_for('grupo_detalhe', grupo_id=grupo_id))
+
+
+@app.route('/perfil')
+def perfil():
+    """Perfil do usuário logado: nome, bio, foto, plano e seus grupos."""
+    user = get_current_user()
+    if not user:
+        return redirect(url_for('login'))
+    dados_perfil = get_or_create_perfil(user['user_id'], user['username'])
+    try:
+        meus_grupos = listar_grupos(user)
+    except Exception as e:
+        print(f"Erro ao buscar grupos do perfil: {e}")
+        meus_grupos = []
+    return render_template(
+        'perfil.html',
+        usuario=user['username'],
+        role=papel_de(user),
+        perfil=dados_perfil,
+        foto_url=gerar_url_foto(dados_perfil.get('foto_key')),
+        meu_user_id=user['user_id'],
+        premium=usuario_e_premium(user['user_id']),
+        limite_grupos=GRUPOS_LIMITE_GRATIS,
+        meus_grupos=meus_grupos,
+    )
 
 
 if __name__ == '__main__':

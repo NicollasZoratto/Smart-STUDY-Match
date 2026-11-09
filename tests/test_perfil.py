@@ -36,7 +36,7 @@ def test_editar_o_proprio_perfil_e_permitido(catalog_app):
          patch.object(catalog_app, 'log_event') as mock_log, \
          patch('mysql.connector.connect') as mock_connect:
         mock_connect.return_value.cursor.return_value = MagicMock()
-        res = client.post('/perfil/1/editar', data={"nome_exibicao": "Nicollas Z.", "bio": "Fã de Tom Hanks"})
+        res = client.post('/perfil/1/editar', data={"nome_exibicao": "Nicollas Z.", "bio": "Estudo nuvem à noite"})
 
     assert res.status_code == 302
     assert '/perfil' in res.headers['Location']

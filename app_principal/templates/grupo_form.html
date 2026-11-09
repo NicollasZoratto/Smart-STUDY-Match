@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>StudyMatch — Grupo de estudo</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <div class="container">
+    <div class="glass-panel">
+      <div class="top-bar">
+        <h1>{{ '✏️ Editar grupo' if editando else '➕ Novo grupo' }}</h1>
+        <div class="user-info">
+          <span>{{ usuario }}</span>
+          <span class="badge {{ 'admin' if role == 'admin' else '' }}">{{ role }}</span>
+          {% if premium %}<span class="badge premium">👑 Pro</span>{% endif %}
+          <a href="{{ url_for('grupos_lista') }}" class="btn-secondary">📚 Grupos</a>
+          <a href="{{ url_for('perfil') }}" class="btn-secondary">👤 Perfil</a>
+          {% if role == 'admin' %}<a href="{{ url_for('admin_logs') }}" class="btn-secondary">📜 Logs</a>{% endif %}
+          <a href="/logout" class="btn-logout">Sair</a>
+        </div>
+      </div>}}
+      {% with messages = get_flashed_messages(with_categories=true) %}
+      {% for category, message in messages %}
+      <div class="alert alert-{{ category if category != 'error' else 'danger' }}">{{ message }}</div>
+      {% endfor %}
+      {% endwith %}
+      <form action="{{ url_for('grupo_editar', grupo_id=grupo.id) if editando else url_for('grupo_novo') }}" method="POST">
+        <div class="form-group"><label>Título</label>
+          <input type="text" name="titulo" value="{{ grupo.titulo or '' }}" minlength="3" maxlength="120" required placeholder="Ex.: Revisão de JOIN para a P2"></div>
+        <div class="form-group"><label>Disciplina</label>
+          <select name="disciplina_id" required>
+            {% for d in disciplinas %}<option value="{{ d.id }}" {{ 'selected' if grupo.disciplina_id|string == d.id|string }}>{{ d.nome }}</option>{% endfor %}
+          </select></div>
+        <div class="form-group"><label>Descrição</label>
+          <textarea name="descricao" rows="3" maxlength="500">{{ grupo.descricao or '' }}</textarea></div>
+        <div class="form-group"><label>Dia da semana</label>
+          <select name="dia_semana">{% for nome in dias %}<option value="{{ loop.index0 }}" {{ 'selected' if grupo.dia_semana|string == loop.index0|string }}>{{ nome }}</option>{% endfor %}</select></div>
+        <div class="form-group"><label>Início</label><input type="time" name="horario_inicio" value="{{ grupo.horario_inicio or '21:00' }}" required></div>
+        <div class="form-group"><label>Término</label><input type="time" name="horario_fim" value="{{ grupo.horario_fim or '22:00' }}" required></div>
+        <div class="form-group"><label>Vagas (2 a 50)</label><input type="number" name="vagas" min="2" max="50" value="{{ grupo.vagas or 5 }}" required></div>
+        <div class="form-group"><label>Modalidade</label>
+          <select name="modalidade"><option value="online" {{ 'selected' if grupo.modalidade != 'presencial' }}>Online</option>
+            <option value="presencial" {{ 'selected' if grupo.modalidade == 'presencial' }}>Presencial</option></select></div>
+        <button type="submit">💾 Salvar</button>
+        <a href="{{ url_for('grupos_lista') }}" class="btn-secondary">Cancelar</a>
+      </form>
+    </div>
+  </div>
+</body>
+</html>

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>NicoFlix — Logs e Auditoria</title>
+  <title>StudyMatch — Logs e Auditoria</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
@@ -13,8 +13,7 @@
         <h1>📜 Logs e Auditoria</h1>
         <div class="user-info">
           <span>Admin: <strong>{{ usuario }}</strong></span>
-          <a href="{{ url_for('admin_comentarios') }}" class="btn-secondary">🛡️ Moderação</a>
-          <a href="{{ url_for('index') }}" class="btn-secondary">← Voltar ao catálogo</a>
+          <a href="{{ url_for('grupos_lista') }}" class="btn-secondary">← Voltar aos grupos</a>
         </div>
       </div>
 

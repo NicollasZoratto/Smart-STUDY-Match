@@ -126,32 +126,4 @@ def test_assinar_cria_checkout_e_redireciona(catalog_app):
     assert kw['client_reference_id'] == '5'  # vem do JWT, não do formulário
 
 
-# --- Benefício Premium: limite de favoritos ---
-
-def _favoritar(app_mod, premium, total):
-    with patch.object(app_mod, 'get_current_user', return_value=_user(1)), \
-         patch.object(app_mod, 'usuario_e_premium', return_value=premium), \
-         patch.object(app_mod, 'log_event') as log, \
-         patch('mysql.connector.connect') as conn:
-        cur = conn.return_value.cursor.return_value
-        cur.fetchone.side_effect = [None, (total,)]
-        res = app_mod.app.test_client().post('/favoritar', data={"movie_id": "10"})
-    sqls = [c[0][0] for c in cur.execute.call_args_list]
-    return res, sqls, log
-
-
-def test_gratis_no_limite_nao_consegue_favoritar(catalog_app):
-    res, sqls, log = _favoritar(catalog_app, premium=False, total=catalog_app.FAVORITOS_LIMITE_GRATIS)
-    assert res.status_code == 302
-    assert not any(s.startswith('INSERT INTO favoritos') for s in sqls)
-    assert 'limite_favoritos_gratis_atingido' in log.call_args[0][1]
-
-
-def test_premium_favorita_alem_do_limite(catalog_app):
-    res, sqls, _ = _favoritar(catalog_app, premium=True, total=999)
-    assert any(s.startswith('INSERT INTO favoritos') for s in sqls)
-
-
-def test_gratis_abaixo_do_limite_favorita(catalog_app):
-    res, sqls, _ = _favoritar(catalog_app, premium=False, total=1)
-    assert any(s.startswith('INSERT INTO favoritos') for s in sqls)
+# O benefício do plano Pro (limite de grupos do plano grátis) é testado em test_app_principal.py

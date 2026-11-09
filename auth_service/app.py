@@ -29,6 +29,7 @@ SMTP_FROM = os.getenv("SMTP_FROM", "no-reply@nicoflix.local")
 LOG_SERVICE_URL = os.getenv("LOG_SERVICE_URL", "http://log_service:5002")
 
 RESET_TOKEN_TTL_MINUTES = 30
+PAPEIS_CADASTRAVEIS = ('lider', 'estudante')
 
 codes_2fa = {}
 
@@ -43,16 +44,15 @@ def init_db():
     try:
         db = get_db()
         cursor = db.cursor()
-        cursor.execute("SET FOREIGN_KEY_CHECKS = 0")
-        cursor.execute("DROP TABLE IF EXISTS usuarios")
-        cursor.execute("SET FOREIGN_KEY_CHECKS = 1")
+        # Não apagamos mais a tabela a cada início: os ids dos usuários precisam
+        # ser estáveis, porque grupos, perfis e assinaturas apontam para eles.
         cursor.execute("""
-            CREATE TABLE usuarios (
+            CREATE TABLE IF NOT EXISTS usuarios (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 username VARCHAR(100) UNIQUE NOT NULL,
                 email VARCHAR(255) UNIQUE NOT NULL,
                 password VARCHAR(255) NOT NULL,
-                role VARCHAR(20) NOT NULL DEFAULT 'usuario',
+                role VARCHAR(20) NOT NULL DEFAULT 'estudante',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -67,6 +67,8 @@ def init_db():
                 FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE CASCADE
             )
         """)
+        # Migração dos papéis do projeto anterior: 'usuario' passa a ser 'estudante'
+        cursor.execute("UPDATE usuarios SET role = 'estudante' WHERE role = 'usuario'")
         db.commit()
         cursor.close()
         db.close()
@@ -130,7 +132,14 @@ def register_user():
 
         cursor.execute("SELECT COUNT(*) as total FROM usuarios")
         total = cursor.fetchone()['total']
-        role = 'admin' if total == 0 else 'usuario'
+        # O primeiro cadastro vira admin; os demais escolhem entre líder de grupo e estudante.
+        # "admin" nunca pode ser pedido pelo formulário.
+        role_pedido = (data.get('role') or 'estudante').strip().lower()
+        if role_pedido not in PAPEIS_CADASTRAVEIS:
+            cursor.close()
+            db.close()
+            return jsonify({"error": "Papel inválido. Use 'lider' ou 'estudante'."}), 400
+        role = 'admin' if total == 0 else role_pedido
 
         cursor.execute(
             "INSERT INTO usuarios (username, email, password, role) VALUES (%s, %s, %s, %s)",
@@ -232,7 +241,7 @@ def validate_token():
             "valid": True,
             "user_id": decoded["user_id"],
             "username": decoded["username"],
-            "role": decoded.get("role", "usuario")
+            "role": decoded.get("role", "estudante")
         }), 200
     except jwt.ExpiredSignatureError:
         return jsonify({"valid": False, "error": "Token expirado"}), 401

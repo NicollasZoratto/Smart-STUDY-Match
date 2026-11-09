@@ -17,7 +17,7 @@ def test_primeiro_usuario_cadastrado_vira_admin(auth_app):
     assert res.get_json()['role'] == 'admin'
 
 
-def test_segundo_usuario_cadastrado_vira_usuario_comum(auth_app):
+def test_segundo_usuario_cadastrado_vira_estudante(auth_app):
     client = auth_app.app.test_client()
     mock_cursor = MagicMock()
     mock_cursor.fetchone.side_effect = [None, {'total': 1}]
@@ -30,7 +30,7 @@ def test_segundo_usuario_cadastrado_vira_usuario_comum(auth_app):
         })
 
     assert res.status_code == 201
-    assert res.get_json()['role'] == 'usuario'
+    assert res.get_json()['role'] == 'estudante'
 
 
 def test_cadastro_com_dados_incompletos_retorna_400(auth_app):
@@ -90,3 +90,27 @@ def test_forgot_password_nao_revela_se_email_existe(auth_app):
 
     assert res.status_code == 200
     assert "e-mail existir" in res.get_json()['message'].lower()
+
+
+def test_cadastro_pode_escolher_papel_lider(auth_app):
+    client = auth_app.app.test_client()
+    cur = MagicMock()
+    cur.fetchone.side_effect = [None, {'total': 3}]
+    conn = MagicMock()
+    conn.cursor.return_value = cur
+    with patch('mysql.connector.connect', return_value=conn):
+        res = client.post('/register', json={"username": "ana", "email": "a@x.com",
+                                              "password": "s", "role": "lider"})
+    assert res.status_code == 201 and res.get_json()['role'] == 'lider'
+
+
+def test_cadastro_nao_permite_se_autodeclarar_admin(auth_app):
+    client = auth_app.app.test_client()
+    cur = MagicMock()
+    cur.fetchone.side_effect = [None, {'total': 3}]
+    conn = MagicMock()
+    conn.cursor.return_value = cur
+    with patch('mysql.connector.connect', return_value=conn):
+        res = client.post('/register', json={"username": "x", "email": "x@x.com",
+                                              "password": "s", "role": "admin"})
+    assert res.status_code == 400

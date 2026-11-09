@@ -4,7 +4,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>NicoFlix — Meu Perfil</title>
+  <title>StudyMatch — Meu Perfil</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 
@@ -15,8 +15,8 @@
         <h1>👤 Meu Perfil</h1>
         <div class="user-info">
           <span class="badge {{ 'admin' if role == 'admin' else '' }}">{{ role }}</span>
-          {% if premium %}<span class="badge premium">👑 Premium</span>{% endif %}
-          <a href="{{ url_for('index') }}" class="btn-secondary">← Voltar ao catálogo</a>
+          {% if premium %}<span class="badge premium">👑 Pro</span>{% endif %}
+          <a href="{{ url_for('grupos_lista') }}" class="btn-secondary">← Voltar aos grupos</a>
           <a href="/logout" class="btn-logout">Sair</a>
         </div>
       </div>
@@ -31,10 +31,10 @@
 
       <div class="alert alert-success" style="display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap;">
         {% if premium %}
-        <span>👑 Plano <strong>Premium</strong> ativo — favoritos ilimitados ({{ total_favoritos }} salvos).</span>
+        <span>👑 Plano <strong>Pro</strong> ativo — grupos ilimitados.</span>
         {% else %}
-        <span>Plano <strong>Grátis</strong> — favoritos: {{ total_favoritos }}/{{ limite_favoritos }}.</span>
-        <form action="{{ url_for('assinar') }}" method="POST"><button type="submit" class="btn-primary">👑 Assinar Premium — R$ 9,90/mês</button></form>
+        <span>Plano <strong>Grátis</strong> — líderes podem ter {{ limite_grupos }} grupo(s).</span>
+        <form action="{{ url_for('assinar') }}" method="POST"><button type="submit" class="btn-primary">👑 Assinar Pro — R$ 9,90/mês</button></form>
         {% endif %}
       </div>
 
@@ -45,7 +45,7 @@
         <div class="avatar-placeholder">{{ (perfil.nome_exibicao or usuario)[0]|upper }}</div>
         {% endif %}
         <div>
-          <div class="movie-title" style="font-size: 1.3rem;">{{ perfil.nome_exibicao or usuario }}</div>
+          <div class="grupo-title" style="font-size: 1.3rem;">{{ perfil.nome_exibicao or usuario }}</div>
           <p class="profile-bio">{{ perfil.bio or 'Sem bio ainda — conte um pouco sobre você.' }}</p>
         </div>
       </div>
@@ -78,22 +78,11 @@
         </div>
 
         <div>
-          <h3 style="margin-bottom: 0.9rem; font-size: 1rem;">⭐ Filmes favoritados ({{ favoritos_filmes|length }})</h3>
-
-          {% if favoritos_filmes %}
-          <div class="movie-grid" style="grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 1rem;">
-            {% for f in favoritos_filmes %}
-            <div class="movie-card" style="padding: 0.7rem;">
-              {% if f.poster_path %}
-              <img src="https://image.tmdb.org/t/p/w300{{ f.poster_path }}" alt="{{ f.title }}" style="margin-bottom: 0.5rem;">
-              {% endif %}
-              <div class="movie-title" style="font-size: 0.88rem;">{{ f.title }}</div>
-              <span class="movie-meta">📅 {{ f.release_date[:4] if f.release_date else 'N/A' }}</span>
-            </div>
-            {% endfor %}
-          </div>
+          <h3 style="margin-bottom: 0.9rem; font-size: 1rem;">📚 Meus grupos ({{ meus_grupos|length }})</h3>
+          {% if meus_grupos %}
+          <ul>{% for g in meus_grupos %}<li><a href="{{ url_for('grupo_detalhe', grupo_id=g.id) }}" class="link-muted">{{ g.titulo }}</a> — {{ g.dia_semana_nome }} {{ g.horario_inicio }}</li>{% endfor %}</ul>
           {% else %}
-          <p class="empty-state">Você ainda não favoritou nenhum filme. <a href="{{ url_for('index') }}" class="link-muted">Volte pro catálogo</a> e favorite alguns!</p>
+          <p class="empty-state">Nenhum grupo ainda. <a href="{{ url_for('grupos_lista') }}" class="link-muted">Ver grupos</a>.</p>
           {% endif %}
         </div>
       </div>
