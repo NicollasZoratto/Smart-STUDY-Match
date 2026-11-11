@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>StudyMatch — Painel admin</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <div class="container">
+    <div class="glass-panel">
+      <div class="top-bar">
+        <h1>📊 Painel do negócio</h1>
+        <div class="user-info">
+          <span>Admin: <strong>{{ usuario }}</strong></span>
+          <a href="{{ url_for('admin_logs') }}" class="btn-secondary">📜 Logs</a>
+          <a href="{{ url_for('grupos_lista') }}" class="btn-secondary">← Voltar aos grupos</a>
+        </div>
+      </div>
+      {% with messages = get_flashed_messages(with_categories=true) %}
+      {% for category, message in messages %}<div class="alert alert-{{ category }}">{{ message }}</div>{% endfor %}
+      {% endwith %}
+      <div class="grupo-grid" style="margin-bottom:1.5rem;">
+        <div class="grupo-card"><div class="grupo-title">👥 Usuários</div><p style="font-size:1.6rem;">{{ total_usuarios }}</p></div>
+        <div class="grupo-card"><div class="grupo-title">Plano Free</div><p style="font-size:1.6rem;">{{ usuarios_free }}</p></div>
+        <div class="grupo-card"><div class="grupo-title">👑 Plano Pro</div><p style="font-size:1.6rem;">{{ usuarios_pro }}</p></div>
+        <div class="grupo-card"><div class="grupo-title">Assinaturas ativas</div><p style="font-size:1.6rem;">{{ assinaturas_ativas }}</p></div>
+        <div class="grupo-card"><div class="grupo-title">💰 MRR (teste)</div><p style="font-size:1.6rem;">R$ {{ '%.2f'|format(mrr_reais)|replace('.', ',') }}</p></div>
+        <div class="grupo-card"><div class="grupo-title">⚠️ Inadimplentes</div><p style="font-size:1.6rem;">{{ inadimplentes }}</p></div>
+      </div>
+      <p class="muted small">MRR de teste = assinaturas ativas × valor mensal do Pro (modo de teste do Stripe, sem cobrança real).</p>
+      <h3 style="margin:1rem 0 .6rem;font-size:1rem;">Últimos eventos</h3>
+      {% if eventos %}
+      <div class="table-wrapper"><table>
+        <thead><tr><th>Quando</th><th>Usuário</th><th>Ação</th></tr></thead>
+        <tbody>{% for e in eventos %}<tr><td class="mono">{{ e.timestamp }}</td><td>{{ e.usuario }}</td><td>{{ e.acao }}</td></tr>{% endfor %}</tbody>
+      </table></div>
+      {% else %}<p class="empty-state">Nenhum evento ainda.</p>{% endif %}
+    </div>
+  </div>
+</body>
+</html>

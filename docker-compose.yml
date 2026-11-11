@@ -103,7 +103,7 @@ services:
       - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY:-}
       - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET:-}
       - STRIPE_PRICE_ID=${STRIPE_PRICE_ID:-}
-      - GRUPOS_LIMITE_GRATIS=${GRUPOS_LIMITE_GRATIS:-1}
+      - GRUPOS_LIMITE_GRATIS=${GRUPOS_LIMITE_GRATIS:-3}
     depends_on:
       - auth_service
       - log_service

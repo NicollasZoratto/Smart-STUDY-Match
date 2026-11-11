@@ -194,6 +194,8 @@ def test_lider_gratis_no_limite_nao_cria_mais_grupos(ctx):
         res = client.post('/api/grupos', json=DADOS)
         log = app_mod.log_event
     assert res.status_code == 403 and res.get_json()['codigo'] == 'limite_plano_gratis'
+    msg = res.get_json()['error']
+    assert 'Limite do plano Free' in msg and 'Pro' in msg  # diz qual é o limite e como liberar
     assert log.call_args[0][1] == 'limite_grupos_gratis_atingido'
 
 

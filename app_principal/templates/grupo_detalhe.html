@@ -17,7 +17,7 @@
           {% if premium %}<span class="badge premium">👑 Pro</span>{% endif %}
           <a href="{{ url_for('grupos_lista') }}" class="btn-secondary">📚 Grupos</a>
           <a href="{{ url_for('perfil') }}" class="btn-secondary">👤 Perfil</a>
-          {% if role == 'admin' %}<a href="{{ url_for('admin_logs') }}" class="btn-secondary">📜 Logs</a>{% endif %}
+          {% if role == 'admin' %}<a href="{{ url_for('admin_painel') }}" class="btn-secondary">📊 Painel</a><a href="{{ url_for('admin_logs') }}" class="btn-secondary">📜 Logs</a>{% endif %}
           <a href="/logout" class="btn-logout">Sair</a>
         </div>
       </div>}}

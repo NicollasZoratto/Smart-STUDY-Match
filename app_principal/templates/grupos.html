@@ -17,7 +17,7 @@
           {% if premium %}<span class="badge premium">👑 Pro</span>{% endif %}
           <a href="{{ url_for('grupos_lista') }}" class="btn-secondary">📚 Grupos</a>
           <a href="{{ url_for('perfil') }}" class="btn-secondary">👤 Perfil</a>
-          {% if role == 'admin' %}<a href="{{ url_for('admin_logs') }}" class="btn-secondary">📜 Logs</a>{% endif %}
+          {% if role == 'admin' %}<a href="{{ url_for('admin_painel') }}" class="btn-secondary">📊 Painel</a><a href="{{ url_for('admin_logs') }}" class="btn-secondary">📜 Logs</a>{% endif %}
           <a href="/logout" class="btn-logout">Sair</a>
         </div>
       </div>
@@ -28,7 +28,7 @@
       {% endwith %}
       {% if role == 'lider' and not premium %}
       <div class="alert alert-success" style="display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap;">
-        <span>Plano grátis: {{ grupos|length }}/{{ limite }} grupo(s). O Pro libera grupos ilimitados.</span>
+        <span>Plano Free: até {{ limite }} grupos criados por mês. O Pro libera grupos ilimitados.</span>
         <form action="{{ url_for('assinar') }}" method="POST"><button type="submit" class="btn-primary">👑 Assinar Pro — R$ 9,90/mês</button></form>
       </div>
       {% endif %}

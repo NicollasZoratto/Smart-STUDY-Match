@@ -48,7 +48,7 @@ STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")        # sk_test_...
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")  # whsec_...
 STRIPE_PRICE_ID = os.getenv("STRIPE_PRICE_ID", "")            # price_... (opcional)
 # Benefício Pro: grupos próprios ilimitados. Plano grátis tem este teto (líder).
-GRUPOS_LIMITE_GRATIS = int(os.getenv("GRUPOS_LIMITE_GRATIS", "1"))
+GRUPOS_LIMITE_GRATIS = int(os.getenv("GRUPOS_LIMITE_GRATIS", "3"))  # grupos criados por mês no Free
 if STRIPE_SECRET_KEY:
     stripe.api_key = STRIPE_SECRET_KEY
 
@@ -264,6 +264,9 @@ _ACAO_LABELS = {
     'assinatura_checkout_iniciado': '💳 Iniciou checkout Pro',
     'assinatura_premium_ativada': '👑 Plano Pro ativado (webhook Stripe)',
     'assinatura_premium_cancelada': '❎ Plano Pro cancelado (webhook Stripe)',
+    'assinatura_atualizada': '🔄 Assinatura atualizada (webhook Stripe)',
+    'assinatura_pagamento_falhou': '⚠️ Pagamento da renovação falhou (webhook Stripe)',
+    'assinatura_portal_aberto': '🧾 Abriu o portal do cliente',
     'limite_grupos_gratis_atingido': '🚫 Limite de grupos do plano grátis',
 }
 
@@ -417,19 +420,12 @@ def logout():
     return redirect(url_for('login'))
 
 
-@app.route('/admin/logs')
-def admin_logs():
-    user = get_current_user()
-    if not user:
-        return redirect(url_for('login'))
-    if user.get('role') != 'admin':
-        log_event(user['user_id'], '403_acesso_logs_negado')
-        abort(403)
-
+def _eventos_recentes(limite):
+    """Últimos eventos do log_service (mais recente primeiro), já com nome do usuário e rótulo."""
     usuarios_por_id = _buscar_usuarios()
     eventos = []
     try:
-        res = requests.get(f"{LOG_SERVICE_URL}/events", params={"limit": 100}, timeout=5)
+        res = requests.get(f"{LOG_SERVICE_URL}/events", params={"limit": limite}, timeout=5)
         if res.status_code == 200:
             for e in res.json().get('events', []):
                 uid = e.get('usuario_id')
@@ -447,51 +443,145 @@ def admin_logs():
             flash("Não foi possível consultar o serviço de logs.", "danger")
     except Exception as e:
         flash(f"Erro de conexão com o serviço de logs: {e}", "danger")
+    return eventos
+
+
+@app.route('/admin/logs')
+def admin_logs():
+    user = get_current_user()
+    if not user:
+        return redirect(url_for('login'))
+    if user.get('role') != 'admin':
+        log_event(user['user_id'], '403_acesso_logs_negado')
+        abort(403)
+
+    eventos = _eventos_recentes(100)
 
     return render_template('admin_logs.html', eventos=eventos, usuario=user['username'])
 
 
+# ---------------------------------------------------------------------
+# Assinatura recorrente (Stripe): plano Free x Pro, portal do cliente e webhooks
+# O estado do plano só muda por webhook assinado (nunca pelo redirect do checkout).
+# ---------------------------------------------------------------------
+PRO_PRECO_CENTAVOS = int(os.getenv("PRO_PRECO_CENTAVOS", "990"))
+STATUS_PRO = ("active", "trialing")  # status do Stripe que liberam o plano Pro
+_COLUNAS_ASSINATURAS = {
+    "plano": "VARCHAR(10) NOT NULL DEFAULT 'free'",
+    "status": "VARCHAR(20) NOT NULL DEFAULT 'sem_assinatura'",
+    "stripe_price_id": "VARCHAR(64)",
+    "cancelar_no_fim": "TINYINT(1) NOT NULL DEFAULT 0",
+}
+
+
+def migrar_assinaturas():
+    """Acrescenta as colunas de assinatura à tabela criada na Atividade 7 (idempotente)."""
+    try:
+        db = get_db()
+        cursor = db.cursor()
+        for coluna, ddl in _COLUNAS_ASSINATURAS.items():
+            cursor.execute("SHOW COLUMNS FROM assinaturas LIKE %s", (coluna,))
+            if not cursor.fetchone():
+                cursor.execute(f"ALTER TABLE assinaturas ADD COLUMN {coluna} {ddl}")
+        cursor.execute("UPDATE assinaturas SET plano = 'pro', status = 'active' "
+                       "WHERE premium = 1 AND plano = 'free'")
+        db.commit(); cursor.close(); db.close()
+    except Exception as e:
+        print(f"[DB ERROR] Falha ao migrar assinaturas: {e}")
+
+
+migrar_assinaturas()
+
+
+def obter_assinatura(user_id):
+    """Linha da assinatura do usuário (dict) ou um Free padrão. Consulta o banco a cada chamada."""
+    padrao = {"plano": "free", "status": "sem_assinatura", "premium": 0, "cancelar_no_fim": 0,
+              "stripe_customer_id": None, "stripe_subscription_id": None}
+    try:
+        row = _consulta("SELECT * FROM assinaturas WHERE user_id = %s", (user_id,), um=True)
+        return row or padrao
+    except Exception as e:
+        print(f"Erro ao consultar assinatura: {e}")
+        return padrao
+
+
+def obter_ou_criar_customer(user):
+    """Cada usuário tem um Customer no Stripe; o id fica guardado no banco (nunca dado de cartão)."""
+    atual = obter_assinatura(user['user_id']).get('stripe_customer_id')
+    if atual:
+        return atual
+    cliente = stripe.Customer.create(name=user['username'], metadata={"user_id": str(user['user_id'])})
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute("INSERT INTO assinaturas (user_id, premium, stripe_customer_id) VALUES (%s, 0, %s) "
+                   "ON DUPLICATE KEY UPDATE stripe_customer_id = VALUES(stripe_customer_id)",
+                   (user['user_id'], cliente['id']))
+    db.commit(); cursor.close(); db.close()
+    return cliente['id']
+
+
 @app.route('/assinar', methods=['POST'])
 def assinar():
-    """Cria uma Checkout Session (modo assinatura) e redireciona o usuário logado ao Stripe."""
+    """Checkout Session em modo assinatura, ligada ao Customer do usuário logado."""
     user = get_current_user()
     if not user:
         return redirect(url_for('login'))
     if not STRIPE_SECRET_KEY:
-        flash('Pagamentos não configurados no servidor (STRIPE_SECRET_KEY ausente).', 'error')
+        flash('Pagamentos não configurados no servidor (STRIPE_SECRET_KEY ausente).', 'danger')
         return redirect(url_for('perfil'))
     if usuario_e_premium(user['user_id']):
-        flash('Você já é Pro. 👑', 'success')
+        flash('Você já é Pro. 👑 Use "Gerenciar assinatura" para trocar de plano ou cancelar.', 'success')
         return redirect(url_for('perfil'))
 
     if STRIPE_PRICE_ID:
         item = {"price": STRIPE_PRICE_ID, "quantity": 1}
     else:  # fallback: cria o preço inline (R$ 9,90/mês)
         item = {"quantity": 1, "price_data": {
-            "currency": "brl", "unit_amount": 990,
+            "currency": "brl", "unit_amount": PRO_PRECO_CENTAVOS,
             "recurring": {"interval": "month"},
             "product_data": {"name": "StudyMatch Pro"}}}
     base = request.host_url.rstrip('/')
     try:
         checkout = stripe.checkout.Session.create(
             mode="subscription",
+            customer=obter_ou_criar_customer(user),
             line_items=[item],
-            # id vem do JWT validado, nunca de um campo do formulário
-            client_reference_id=str(user['user_id']),
+            client_reference_id=str(user['user_id']),  # id vem do JWT validado, nunca do formulário
             success_url=f"{base}/assinatura/sucesso",
             cancel_url=f"{base}/perfil",
         )
     except Exception as e:
         print(f"Erro ao criar checkout Stripe: {e}")
-        flash('Não foi possível iniciar o pagamento agora. Tente novamente.', 'error')
+        flash('Não foi possível iniciar o pagamento agora. Tente novamente.', 'danger')
         return redirect(url_for('perfil'))
     log_event(user['user_id'], 'assinatura_checkout_iniciado')
     return redirect(checkout.url, code=303)
 
 
+@app.route('/assinatura/portal', methods=['POST'])
+def assinatura_portal():
+    """Abre o Billing Portal do Stripe: o cliente troca de plano e cancela sozinho."""
+    user = get_current_user()
+    if not user:
+        return redirect(url_for('login'))
+    customer_id = obter_assinatura(user['user_id']).get('stripe_customer_id')
+    if not STRIPE_SECRET_KEY or not customer_id:
+        flash('Você ainda não tem uma assinatura para gerenciar.', 'danger')
+        return redirect(url_for('perfil'))
+    try:
+        sessao = stripe.billing_portal.Session.create(
+            customer=customer_id, return_url=f"{request.host_url.rstrip('/')}/perfil")
+    except Exception as e:
+        print(f"Erro ao abrir o portal do cliente: {e}")
+        flash('Não foi possível abrir o portal agora. Verifique se o portal está configurado no Stripe.', 'danger')
+        return redirect(url_for('perfil'))
+    log_event(user['user_id'], 'assinatura_portal_aberto')
+    return redirect(sessao.url, code=303)
+
+
 @app.route('/assinatura/sucesso')
 def assinatura_sucesso():
-    """Só informativa: o Premium é liberado EXCLUSIVAMENTE pelo webhook assinado."""
+    """Só informativa: o plano muda EXCLUSIVAMENTE quando o webhook assinado chega."""
     user = get_current_user()
     if not user:
         return redirect(url_for('login'))
@@ -503,9 +593,57 @@ def assinatura_sucesso():
     return redirect(url_for('perfil'))
 
 
+def _gravar_estado(cursor, onde, valores_onde, status, price_id=None, cancelar_no_fim=0,
+                   subscription_id=None, customer_id=None):
+    """Atualiza plano/status/premium. O plano efetivo é Pro só enquanto o status for active/trialing."""
+    pro = 1 if status in STATUS_PRO else 0
+    sets = ["plano = %s", "status = %s", "premium = %s", "cancelar_no_fim = %s"]
+    params = ['pro' if pro else 'free', status, pro, 1 if cancelar_no_fim else 0]
+    for col, val in (("stripe_price_id", price_id), ("stripe_subscription_id", subscription_id),
+                     ("stripe_customer_id", customer_id)):
+        if val:
+            sets.append(f"{col} = %s"); params.append(val)
+    cursor.execute(f"UPDATE assinaturas SET {', '.join(sets)} WHERE {onde}", (*params, *valores_onde))
+    return cursor.rowcount
+
+
+def processar_evento_stripe(evento, cursor):
+    """Aplica um evento verificado. Devolve (usuario_id|None, ação-de-log|None)."""
+    tipo = evento.get('type')
+    obj = (evento.get('data') or {}).get('object') or {}
+    if tipo == 'checkout.session.completed':
+        ref = str(obj.get('client_reference_id') or '')
+        if not ref.isdigit() or obj.get('payment_status') not in ('paid', 'no_payment_required'):
+            return None, None
+        uid = int(ref)
+        cursor.execute(
+            """INSERT INTO assinaturas (user_id, premium, plano, status, stripe_customer_id, stripe_subscription_id)
+               VALUES (%s, 1, 'pro', 'active', %s, %s)
+               ON DUPLICATE KEY UPDATE premium = 1, plano = 'pro', status = 'active',
+                 stripe_customer_id = VALUES(stripe_customer_id),
+                 stripe_subscription_id = VALUES(stripe_subscription_id)""",
+            (uid, obj.get('customer'), obj.get('subscription')))
+        return uid, 'assinatura_premium_ativada'
+    if tipo == 'customer.subscription.updated':
+        itens = ((obj.get('items') or {}).get('data')) or [{}]
+        price_id = (itens[0].get('price') or {}).get('id')
+        _gravar_estado(cursor, "stripe_customer_id = %s", (obj.get('customer'),), obj.get('status', ''),
+                       price_id, obj.get('cancel_at_period_end'), obj.get('id'))
+        return None, 'assinatura_atualizada'
+    if tipo == 'customer.subscription.deleted':
+        _gravar_estado(cursor, "stripe_customer_id = %s", (obj.get('customer'),), 'canceled',
+                       None, 0, obj.get('id'))
+        return None, 'assinatura_premium_cancelada'
+    if tipo == 'invoice.payment_failed':
+        _gravar_estado(cursor, "stripe_customer_id = %s", (obj.get('customer'),), 'past_due')
+        return None, 'assinatura_pagamento_falhou'
+    return None, None  # evento que não nos interessa
+
+
 @app.route('/stripe/webhook', methods=['POST'])
 def stripe_webhook():
-    """Recebe eventos do Stripe. Rejeita (400) qualquer requisição sem assinatura válida."""
+    """Recebe eventos do Stripe. Sem assinatura válida → 400 e nada é gravado.
+    Idempotente: o mesmo event.id nunca é processado duas vezes."""
     if not STRIPE_WEBHOOK_SECRET:
         return {"error": "webhook nao configurado"}, 503
     payload = request.get_data()  # corpo CRU: a assinatura é calculada sobre ele
@@ -519,40 +657,62 @@ def stripe_webhook():
         return {"error": "assinatura invalida"}, 400
 
     evento = json.loads(payload)
-    tipo = evento.get('type')
-    obj = (evento.get('data') or {}).get('object') or {}
+    event_id = evento.get('id')
+    db = None
     try:
-        if tipo == 'checkout.session.completed':
-            ref = str(obj.get('client_reference_id') or '')
-            if ref.isdigit() and obj.get('payment_status') in ('paid', 'no_payment_required'):
-                user_id = int(ref)
-                db = get_db()
-                cursor = db.cursor()
-                cursor.execute(
-                    """INSERT INTO assinaturas (user_id, premium, stripe_customer_id, stripe_subscription_id)
-                       VALUES (%s, 1, %s, %s)
-                       ON DUPLICATE KEY UPDATE premium = 1,
-                         stripe_customer_id = VALUES(stripe_customer_id),
-                         stripe_subscription_id = VALUES(stripe_subscription_id)""",
-                    (user_id, obj.get('customer'), obj.get('subscription')))
-                db.commit(); cursor.close(); db.close()
-                _log_sem_request(user_id, 'assinatura_premium_ativada')
-        elif tipo == 'customer.subscription.deleted':
-            sub_id = obj.get('id')
-            if sub_id:
-                db = get_db()
-                cursor = db.cursor()
-                cursor.execute("UPDATE assinaturas SET premium = 0 WHERE stripe_subscription_id = %s", (sub_id,))
-                db.commit(); cursor.close(); db.close()
-                _log_sem_request(None, 'assinatura_premium_cancelada')
+        db = get_db()
+        cursor = db.cursor()
+        cursor.execute("INSERT IGNORE INTO stripe_eventos (event_id, tipo) VALUES (%s, %s)",
+                       (event_id, evento.get('type')))
+        if cursor.rowcount == 0:  # já processado antes: Stripe reenviou
+            db.commit(); cursor.close(); db.close()
+            return {"received": True, "duplicate": True}, 200
+        uid, acao = processar_evento_stripe(evento, cursor)
+        db.commit(); cursor.close(); db.close()
     except Exception as e:
-        print(f"[STRIPE] erro ao processar evento {tipo}: {e}")
-        return {"error": "falha ao processar"}, 500  # Stripe reenviará
+        print(f"[STRIPE] erro ao processar evento {evento.get('type')}: {e}")
+        try:  # desfaz a marca de "processado" para o Stripe poder reenviar
+            if db:
+                db.rollback(); db.close()
+        except Exception:
+            pass
+        return {"error": "falha ao processar"}, 500
+    if acao:
+        log_event(uid, acao)
     return {"received": True}, 200
 
 
-def _log_sem_request(usuario_id, acao):
-    log_event(usuario_id, acao)
+@app.route('/admin/painel')
+def admin_painel():
+    """Painel do negócio, só para admin: usuários por plano, assinaturas ativas, MRR de teste e eventos."""
+    user = get_current_user()
+    if not user:
+        return redirect(url_for('login'))
+    if papel_de(user) != 'admin':
+        log_event(user['user_id'], '403_acesso_painel_negado')
+        abort(403)
+    return render_template('admin_painel.html', usuario=user['username'], role='admin', **dados_painel())
+
+
+def dados_painel():
+    total_usuarios = len(_buscar_usuarios())
+    try:
+        ativas = int((_consulta("SELECT COUNT(*) AS n FROM assinaturas WHERE premium = 1 AND status IN "
+                                "('active','trialing')", um=True) or {}).get('n', 0))
+        inadimplentes = int((_consulta("SELECT COUNT(*) AS n FROM assinaturas WHERE status = 'past_due'",
+                                       um=True) or {}).get('n', 0))
+    except Exception as e:
+        print(f"Erro ao consultar assinaturas do painel: {e}")
+        ativas = inadimplentes = 0
+    return {
+        "total_usuarios": total_usuarios,
+        "usuarios_pro": ativas,
+        "usuarios_free": max(total_usuarios - ativas, 0),
+        "assinaturas_ativas": ativas,
+        "inadimplentes": inadimplentes,
+        "mrr_reais": ativas * PRO_PRECO_CENTAVOS / 100,
+        "eventos": _eventos_recentes(15),
+    }
 
 
 @app.route('/perfil/<int:user_id>/editar', methods=['POST'])
@@ -765,7 +925,9 @@ def listar_disciplinas():
 
 
 def contar_grupos_do_lider(user_id):
-    row = _consulta("SELECT COUNT(*) AS total FROM grupos WHERE lider_id = %s", (user_id,), um=True)
+    """Grupos que o líder criou NESTE MÊS (o limite do plano Free é mensal)."""
+    row = _consulta("SELECT COUNT(*) AS total FROM grupos WHERE lider_id = %s "
+                    "AND criado_em >= DATE_FORMAT(NOW(), '%%Y-%%m-01')", (user_id,), um=True)
     return int(row['total']) if row else 0
 
 
@@ -846,8 +1008,9 @@ def criar_grupo(user, dados):
     if papel_de(user) == 'lider' and not usuario_e_premium(user['user_id']) \
             and contar_grupos_do_lider(user['user_id']) >= GRUPOS_LIMITE_GRATIS:
         log_event(user['user_id'], 'limite_grupos_gratis_atingido')
-        raise ErroNegocio(403, f"O plano grátis permite {GRUPOS_LIMITE_GRATIS} grupo(s). "
-                               "Assine o StudyMatch Pro para criar quantos quiser.", "limite_plano_gratis")
+        raise ErroNegocio(403, f"Limite do plano Free atingido: {GRUPOS_LIMITE_GRATIS} grupos por mês. "
+                               "Para liberar, assine o StudyMatch Pro em /perfil (botão 'Assinar Pro').",
+                          "limite_plano_gratis")
     d = validar_dados_grupo(dados)
     db = get_db()
     cursor = db.cursor()
@@ -1114,6 +1277,7 @@ def perfil():
         foto_url=gerar_url_foto(dados_perfil.get('foto_key')),
         meu_user_id=user['user_id'],
         premium=usuario_e_premium(user['user_id']),
+        assinatura=obter_assinatura(user['user_id']),
         limite_grupos=GRUPOS_LIMITE_GRATIS,
         meus_grupos=meus_grupos,
     )

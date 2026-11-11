@@ -51,15 +51,14 @@ Diferente de grupos de mensagem e planilhas, o StudyMatch encontra para você **
 
 Assinatura mensal recorrente cobrada pelo Stripe (já integrado no projeto, em modo teste).
 
-| | **Free** | **Pro — R$ 9,90/mês** |
+| | **Free — R$ 0,00** | **Pro — R$ 9,90/mês** |
 |---|---|---|
-| Participar de grupos | até **2** grupos ao mesmo tempo | **ilimitados** |
-| Curtidas (swipes) por dia | até 10 | ilimitadas |
-| Criar grupos próprios | 1 grupo | ilimitados |
-| Filtros avançados (horário exato, nível, modalidade) | — | ✔ |
+| Grupos criados por líder | até **3 por mês** | **ilimitados** |
+| Participar de grupos como estudante | sem limite | sem limite |
 | Selo 👑 Pro no perfil | — | ✔ |
+| Gerenciar/cancelar pelo portal do Stripe | — | ✔ |
 
-**Por que alguém pagaria:** quem tem prova marcada e pouco tempo precisa participar de vários grupos (uma disciplina por grupo) e achar parceiros rápido. O limite do Free deixa o produto útil, mas pressiona quem tem mais de duas disciplinas difíceis no semestre. O preço de R$ 9,90 equivale a menos de uma hora de aula particular.
+**Por que alguém pagaria:** quem tem prova marcada e pouco tempo precisa participar de vários grupos (uma disciplina por grupo) e achar parceiros rápido. O limite do Free (3 grupos por mês) deixa o produto útil, mas pressiona o líder que organiza vários grupos de estudo no mês de provas. O preço de R$ 9,90 equivale a menos de uma hora de aula particular.
 
 **Meta realista:** converter de 3% a 5% dos usuários ativos para o Pro.
 
@@ -151,7 +150,7 @@ flowchart LR
 | Papel | Como se obtém | Pode |
 |---|---|---|
 | `admin` | primeiro cadastro do sistema | ver e gerenciar todos os grupos, ver os logs |
-| `lider` | escolhido no cadastro | criar, editar e apagar **os próprios** grupos (plano grátis: 1 grupo; Pro: ilimitados) |
+| `lider` | escolhido no cadastro | criar, editar e apagar **os próprios** grupos (plano Free: 3 grupos por mês; Pro: ilimitados) |
 | `estudante` | escolhido no cadastro | ver os grupos de que participa; **não** cria, edita nem apaga grupos |
 
 As regras valem na API: ação proibida responde **403** mesmo chamando direto, sem passar pela tela. O usuário só vê e altera os próprios dados: abrir o ID de um grupo de outra pessoa responde **403** (registro inexistente responde 404).
@@ -181,7 +180,78 @@ Para testar direto, com o login feito no navegador, abra o console (F12) e rode,
 `grupo_criado`, `grupo_editado`, `grupo_removido`, `foto_grupo_enviada`, `limite_grupos_gratis_atingido`, `assinatura_*`, `403_*` (acessos negados), além de login e logout. O admin vê tudo em `/admin/logs`, com usuário, ação, IP e data.
 
 ### Plano Pro (Stripe)
-Free: 1 grupo próprio por líder. Pro, R$ 9,90/mês: grupos ilimitados e selo 👑. O Pro só é concedido pelo webhook assinado do Stripe (detalhes em [`docs/README_NicoFlix_filmes.md`](docs/README_NicoFlix_filmes.md)).
+Free: 3 grupos criados por mês por líder. Pro, R$ 9,90/mês: grupos ilimitados e selo 👑. Detalhes na seção da Atividade 11 abaixo.
 
 ### Trocar a stack do Portainer para este repositório
 Stacks → sua stack → *Editor* → em **Repository URL** coloque `https://github.com/NicollasZoratto/Smart-STUDY-Match` (branch `main`), mantenha as variáveis de ambiente (remova `TMDB_API_KEY` se existir) → *Pull and redeploy*.
+
+
+---
+
+## Atividade 11 — SaaS completo: planos, limites e assinatura com Stripe
+
+> Tudo em **modo de teste** do Stripe. Nenhuma chave está no repositório: elas ficam nas variáveis de ambiente da stack no Portainer (`.env.example` só traz os nomes). Dado de cartão nunca passa pelo nosso servidor.
+
+### Planos
+| Plano | Preço | Limite |
+|---|---|---|
+| **Free** (padrão ao criar conta; no banco é `plano = 'free'`) | R$ 0,00 | líder cria até **3 grupos por mês** |
+| **Pro** (produto "StudyMatch Pro" no Stripe, preço recorrente mensal) | R$ 9,90/mês | sem limite |
+
+### Ciclo de vida da assinatura
+```mermaid
+flowchart LR
+    U([Usuário Free]) -->|Assinar Pro| APP["App: POST /assinar<br/>cria Customer e Checkout Session (subscription)"]
+    APP -->|redireciona| CK["Stripe Checkout<br/>cobra todo mês"]
+    CK -->|eventos| WH["POST /stripe/webhook<br/>assinatura validada, evento processado 1 vez"]
+    PORTAL["Portal do cliente<br/>troca de plano, cancelamento"] -->|updated / deleted| WH
+    APP -->|Gerenciar assinatura| PORTAL
+    WH -.->|atualiza| DB[("assinaturas: plano, status,<br/>ids do Stripe")]
+    DB -->|a cada requisição| LIM["Limites na API<br/>Free: 3 grupos/mês · Pro: ilimitado"]
+```
+O plano muda **só quando o webhook chega**, nunca porque o navegador voltou do checkout. Toda rota que depende do plano consulta o banco a cada requisição, então o limite do Free vale na API e não só na tela.
+
+### Webhooks (`POST /stripe/webhook`)
+| Evento | O que o app faz |
+|---|---|
+| `checkout.session.completed` | guarda `customer` e `subscription` no usuário e muda o plano para **Pro** (`status = active`) |
+| `customer.subscription.updated` | atualiza status, preço e "cancelar no fim do período"; Pro só enquanto o status for `active`/`trialing` |
+| `customer.subscription.deleted` | volta o usuário para o **Free** (`status = canceled`) |
+| `invoice.payment_failed` | marca `past_due`, tira o Pro e mostra o aviso de cobrança falha no perfil |
+
+- **Assinatura validada:** `stripe.Webhook.construct_event` com o `whsec_...`; sem assinatura válida responde 400 e nada é gravado.
+- **Sem efeito duplicado:** cada `event.id` é gravado em `stripe_eventos` (`INSERT IGNORE`, script `db/002_assinaturas.sql`). Evento repetido responde 200 e é ignorado. Se o processamento falha, a marca é desfeita e a resposta é 500, para o Stripe reenviar.
+- **Ordem não garantida:** o Customer é criado antes do checkout, então qualquer evento acha o usuário pelo `customer`, mesmo chegando antes do `checkout.session.completed`.
+
+### Portal do cliente
+O botão **"Gerenciar assinatura"** (em `/perfil`) chama `POST /assinatura/portal`, que abre o Billing Portal do Stripe para o próprio Customer do usuário logado. Lá o cliente troca de plano e cancela sozinho.
+
+### Limite do Free na API
+`POST /api/grupos` e a tela de novo grupo recusam o 4º grupo do mês com **403** e a mensagem: *"Limite do plano Free atingido: 3 grupos por mês. Para liberar, assine o StudyMatch Pro em /perfil (botão 'Assinar Pro')."*
+
+### Painel admin (`/admin/painel`, só admin)
+Usuários por plano (Free x Pro), assinaturas ativas, inadimplentes, **MRR de teste** (assinaturas ativas × R$ 9,90) e os últimos eventos do log. Outro papel recebe 403.
+
+### Variáveis de ambiente (Portainer)
+| Variável | Valor |
+|---|---|
+| `STRIPE_SECRET_KEY` | chave secreta de teste (`sk_test_...`) |
+| `STRIPE_WEBHOOK_SECRET` | segredo do destino do webhook (`whsec_...`) |
+| `STRIPE_PRICE_ID` | ID do preço recorrente do Pro (`price_...`); se vazio, o app cria o preço inline de R$ 9,90 |
+| `GRUPOS_LIMITE_GRATIS` | grupos por mês no Free (padrão 3) |
+
+### Configuração no Stripe (modo de teste)
+1. **Produtos:** *Product catalog* → "StudyMatch Pro" (R$ 9,90, recorrente mensal) e, se quiser, "StudyMatch Free" (R$ 0,00, recorrente mensal).
+2. **Webhook:** destino com a URL `https://nicollas-carvalho-isw055.lapps.studio/stripe/webhook` e os quatro eventos da tabela acima.
+3. **Portal do cliente:** *Settings → Billing → Customer portal* (em modo de teste): habilitar cancelamento de assinatura e, para testar na hora, cancelamento **imediato**; habilitar troca de plano se houver mais de um preço.
+
+### Cenário de teste
+1. Criar uma conta nova (nasce no Free) e criar 3 grupos; o 4º é recusado com a mensagem do limite.
+2. Em `/perfil`, **Assinar Pro** e pagar com o cartão `4242 4242 4242 4242` (data futura, qualquer CVC).
+3. Voltar ao app: plano Pro e limite liberado, porque o webhook chegou.
+4. **Gerenciar assinatura** → cancelar; quando o webhook `customer.subscription.deleted` chega, a conta volta ao Free.
+5. Como admin, abrir `/admin/painel` e `/admin/logs`.
+6. Para testar cobrança recusada, usar um cartão de teste que falha na renovação (ver a documentação *Testing* do Stripe).
+
+### Testes automatizados
+`tests/test_premium.py`: assinatura inválida/forjada/adulterada (400), os quatro eventos, evento duplicado sem efeito, erro → 500, checkout (`mode=subscription` ligado ao Customer), portal e painel admin.
