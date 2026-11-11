@@ -98,7 +98,7 @@ Assinatura mensal recorrente cobrada pelo Stripe (já integrado no projeto, em m
 | RBAC (admin / usuario) | Papéis do negócio | **admin**, **líder de grupo** (cria e modera o grupo) e **estudante** |
 | Logs e auditoria (Redis Streams) | Eventos de negócio | "match criado", "pedido de entrada", "entrada aceita", "grupo criado", "limite do plano atingido" |
 | Upload e perfil (MinIO) | Arquivos do domínio | Foto de perfil, foto/capa do grupo, e anexos de material de estudo (PDF de resumo) |
-| Plano Premium (Stripe) | Assinatura | **StudyMatch Pro**: grupos e curtidas ilimitados, filtros avançados, selo |
+| Plano Premium (Stripe) | Assinatura | **StudyMatch Pro**: grupos ilimitados e selo (Free: 3 grupos por mês) |
 | Documentação reversa (Atividade 8) | Manutenção | Continua valendo; será atualizada a cada entrega |
 | Testes automatizados (pytest) | Qualidade | Continuam, com novos testes para match e limites |
 | Deploy via Portainer + Docker Compose | Entrega | Mesma stack, mesma infraestrutura e mesmo subdomínio |
