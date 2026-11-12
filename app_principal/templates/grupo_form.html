@@ -20,7 +20,7 @@
           {% if role == 'admin' %}<a href="{{ url_for('admin_painel') }}" class="btn-secondary">📊 Painel</a><a href="{{ url_for('admin_logs') }}" class="btn-secondary">📜 Logs</a>{% endif %}
           <a href="/logout" class="btn-logout">Sair</a>
         </div>
-      </div>}}
+      </div>
       {% with messages = get_flashed_messages(with_categories=true) %}
       {% for category, message in messages %}
       <div class="alert alert-{{ category if category != 'error' else 'danger' }}">{{ message }}</div>

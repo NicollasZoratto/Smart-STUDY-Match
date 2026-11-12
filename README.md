@@ -255,3 +255,17 @@ Usuários por plano (Free x Pro), assinaturas ativas, inadimplentes, **MRR de te
 
 ### Testes automatizados
 `tests/test_premium.py`: assinatura inválida/forjada/adulterada (400), os quatro eventos, evento duplicado sem efeito, erro → 500, checkout (`mode=subscription` ligado ao Customer), portal e painel admin.
+
+### Evidências da Atividade 11 (prints, modo de teste)
+Dados pessoais (e-mail e nome do titular) foram borrados.
+
+| # | Print |
+|---|---|
+| 1 | [Stack no Portainer com os containers saudáveis](docs/prints/atividade-11/01-portainer-stack-saudavel.png) |
+| 2 | [Limite do plano Free bloqueando o 4º grupo](docs/prints/atividade-11/02-limite-plano-free-403.png) |
+| 3 | [Checkout de assinatura com o cartão 4242](docs/prints/atividade-11/03-checkout-stripe-cartao-4242.png) |
+| 4 | [Perfil já no plano Pro (webhook processado)](docs/prints/atividade-11/04-perfil-plano-pro.png) |
+| 5 | [Quarto grupo criado depois de assinar o Pro](docs/prints/atividade-11/05-grupos-apos-assinar-pro.png) |
+| 6 | [Stripe (modo de teste): cliente criado](docs/prints/atividade-11/06-stripe-clientes-teste.png) |
+| 7 | [Stripe: webhook `checkout.session.completed` entregue com 200](docs/prints/atividade-11/07-stripe-webhook-200.png) |
+| 8 | [Perfil de volta ao Free depois do cancelamento](docs/prints/atividade-11/08-perfil-volta-ao-free.png) |
