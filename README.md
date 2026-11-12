@@ -7,6 +7,9 @@ Este repositório é a continuação do **NicoFlix** (catálogo de filmes do Tom
 
 **🌐 Sistema no ar:** https://nicollas-carvalho-isw055.lapps.studio — veja a seção [Atividade 10](#atividade-10--negócio-no-ar-studymatch).
 
+**Relatório P2 (ISW055):** [docs/P2_ISW055_Nicollas_Zoratto.pdf](docs/P2_ISW055_Nicollas_Zoratto.pdf) — entrega para o professor [github.com/siriani](https://github.com/siriani).
+
+
 ---
 
 ## 1. Nome e frase

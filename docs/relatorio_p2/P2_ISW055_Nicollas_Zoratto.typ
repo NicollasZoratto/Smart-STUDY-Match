@@ -68,7 +68,7 @@
   #text(size: 9.5pt)[#link(repo)]
   #v(1fr)
   #text(size: 10pt)[Prof. Allan Lincoln Rodrigues Siriani\
-  Pompeia, 13/11/2026]
+  Pompeia, 12/11/2026]
 ]
 
 #set page(
@@ -238,9 +238,9 @@ Atividades obrigatórias do 2º bimestre. A data realizada é a do commit (ativi
 *O que foi feito.* Troquei o repositório da stack do Portainer para o novo, sem criar stack nem trocar de subdomínio, e substituí o catálogo de filmes pelo recurso principal do negócio, o grupo de estudo. Criei as tabelas `disciplinas`, `grupos` e `grupo_membros` com chaves estrangeiras e o script de migração e seed `db/001_dominio.sql`, a API REST com CRUD completo em `/api/grupos`, as telas de listar, criar, detalhar e editar, os três papéis no auth-service (`admin`, `lider` e `estudante`, escolhidos no cadastro), o isolamento por usuário (403 ao abrir o grupo de outra pessoa), eventos de negócio no log e o upload da capa do grupo no MinIO, ligado ao registro certo. A landing page pública ficou na raiz do domínio, e removi o código, as telas, as rotas e a variável do TMDB.
 
 #fig("a10-evidencia.png", [Atividade 10 — evidência da entrega (link, data e hora visíveis).], w: 90%)
-#fig("a10-landing.png", [Atividade 10 — landing page pública no ar.], w: 90%)
-#fig("a10-403.png", [Atividade 10 — resposta 403 para papel sem permissão e para o registro de outro usuário.], w: 90%)
-#fig("a10-log.png", [Atividade 10 — eventos de negócio no log, vistos pelo admin.], w: 90%)
+#fig("a10-landing.png", [Atividade 10 — tela pública de acesso (login e cadastro com escolha de papel) no ar.], w: 90%)
+#fig("a10-403.png", [Atividade 10 — resposta 403 (Forbidden) quando um estudante abre a tela restrita /admin/logs.], w: 90%)
+#fig("a10-log.png", [Atividade 10 — eventos de negócio no log (grupo criado, login, checkout, ação negada 403), vistos pelo admin.], w: 90%)
 
 *Dificuldades e como foram resolvidas.* Os identificadores dos usuários precisavam ser estáveis, mas o auth-service apagava a tabela de usuários a cada reinício; passei a criá-la só se não existir e migrei o papel antigo `usuario` para `estudante`. Como `usuarios` pertence a outro serviço, `grupos.lider_id` é uma referência lógica e não uma chave estrangeira. *Entregue com atraso* (planejada em 06/11, realizada em 09/11): a migração do domínio, a troca de papéis e o redeploy foram concluídos apenas na noite de 09/11.
 
@@ -272,5 +272,5 @@ Declaro que este relatório foi elaborado por mim, individualmente, e que as evi
 #v(1.8cm)
 #grid(columns: (1fr, 1fr), gutter: 1.5cm,
   [#line(length: 100%, stroke: 0.6pt) #v(0.3em) #align(center)[#aluno]],
-  [#line(length: 100%, stroke: 0.6pt) #v(0.3em) #align(center)[Pompeia, 13/11/2026]],
+  [#line(length: 100%, stroke: 0.6pt) #v(0.3em) #align(center)[Pompeia, 12/11/2026]],
 )
